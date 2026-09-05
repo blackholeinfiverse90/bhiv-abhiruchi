@@ -47,5 +47,8 @@ Thumbs.db
 # Misc security/keys
 *.pem
 .env
-.env.local
-.env.*.local
+.env*
+*.env
+!.env.example
+!*.env.example
+

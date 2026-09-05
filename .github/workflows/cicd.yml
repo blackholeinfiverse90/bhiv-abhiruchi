@@ -1,0 +1,350 @@
+name: Abhiruchi Production Infrastructure CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    name: Validate production deployment configuration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set GitHub SHA
+        run: echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_ENV
+
+      - name: Generate Compose file for validation
+        run: |
+          sed "s|IMG_TAG|$short_sha|g" docker-compose.production.template.yml > docker-compose.production.yml
+
+      - name: Create stub environment files for compose validation
+        run: |
+          mkdir -p server client
+          touch server/.env client/.env
+
+      - name: Validate Docker Compose syntax
+        run: |
+          docker compose -f docker-compose.production.yml config
+
+      - name: Upload deployment artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-artifacts
+          path: |
+            docker-compose.production.template.yml
+
+  build:
+    name: Build & publish production container images
+    runs-on: ubuntu-latest
+    needs: validate
+    outputs:
+      sha_short: ${{ steps.vars.outputs.sha_short }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set short git commit SHA
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push abhiruchi-backend image
+        run: |
+          docker buildx build --push \
+            --tag bhiv/abhiruchi-backend:${{ steps.vars.outputs.sha_short }} \
+            --tag bhiv/abhiruchi-backend:latest \
+            -f server/Dockerfile server
+
+      - name: Build and push abhiruchi-frontend image
+        run: |
+          VITE_API_BASE_URL="${{ secrets.VITE_API_BASE_URL }}"
+          if [ -z "$VITE_API_BASE_URL" ]; then
+            VITE_API_BASE_URL="http://${{ secrets.VM_IP }}:5004/api"
+          fi
+          
+          VITE_GROK_API_KEY="${{ secrets.VITE_GROK_API_KEY }}"
+          if [ -z "$VITE_GROK_API_KEY" ]; then
+            VITE_GROK_API_KEY="${{ secrets.GROQ_API_KEY }}"
+          fi
+
+          docker buildx build --push \
+            --tag bhiv/abhiruchi-frontend:${{ steps.vars.outputs.sha_short }} \
+            --tag bhiv/abhiruchi-frontend:latest \
+            --build-arg VITE_API_BASE_URL="$VITE_API_BASE_URL" \
+            --build-arg VITE_GROK_API_KEY="$VITE_GROK_API_KEY" \
+            -f client/Dockerfile client
+
+  deploy:
+    name: Deploy production stack to remote VM via SSH
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download deployment artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: deployment-artifacts
+
+      - name: Generate server environment file from secrets
+        run: |
+          mkdir -p server client
+          if [ -n "${{ secrets.ABHIRUCHI_BACKEND_ENV_FILE }}" ]; then
+            cat <<'EOF' > server/.env
+          ${{ secrets.ABHIRUCHI_BACKEND_ENV_FILE }}
+          EOF
+          else
+            cat <<EOF > server/.env
+          NODE_ENV=production
+          PORT=5000
+          MONGODB_URI=${{ secrets.MONGODB_URI }}
+          JWT_SECRET=${{ secrets.JWT_SECRET || 'gurukul_jwt_secret_key_2026' }}
+          CORS_ORIGIN=http://${{ secrets.VM_IP }}:5179,http://localhost:5179,*
+          GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+          CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}
+          CLERK_PUBLISHABLE_KEY=${{ secrets.CLERK_PUBLISHABLE_KEY }}
+          EOF
+          fi
+
+      - name: Generate client environment file from secrets
+        run: |
+          if [ -n "${{ secrets.ABHIRUCHI_FRONTEND_ENV_FILE }}" ]; then
+            cat <<'EOF' > client/.env
+          ${{ secrets.ABHIRUCHI_FRONTEND_ENV_FILE }}
+          EOF
+          else
+            cat <<EOF > client/.env
+          VITE_API_BASE_URL=http://${{ secrets.VM_IP }}:5004/api
+          VITE_GROK_API_KEY=${{ secrets.VITE_GROK_API_KEY || secrets.GROQ_API_KEY }}
+          EOF
+          fi
+
+      - name: Package deployment tarball
+        run: |
+          tar -czf deployment.tar.gz docker-compose.production.template.yml server/.env client/.env
+
+      - name: Install sshpass
+        run: |
+          sudo apt-get update && sudo apt-get install -y sshpass
+
+      - name: Create Abhiruchi directory on VM
+        run: |
+          sshpass -p "${{ secrets.VM_PASSWORD }}" ssh -p ${{ secrets.VM_PORT }} -o StrictHostKeyChecking=no ${{ secrets.VM_USERNAME }}@${{ secrets.VM_IP }} "mkdir -p ~/abhiruchi/docs"
+
+      - name: Copy deployment tarball to VM
+        run: |
+          sshpass -p "${{ secrets.VM_PASSWORD }}" scp -P ${{ secrets.VM_PORT }} -o StrictHostKeyChecking=no deployment.tar.gz ${{ secrets.VM_USERNAME }}@${{ secrets.VM_IP }}:~/abhiruchi/deployment.tar.gz
+
+      - name: Deploy production stack on VM
+        run: |
+          sshpass -p "${{ secrets.VM_PASSWORD }}" ssh -p ${{ secrets.VM_PORT }} -o StrictHostKeyChecking=no ${{ secrets.VM_USERNAME }}@${{ secrets.VM_IP }} "bash -s" << 'EOF'
+            set -euo pipefail
+            cd ~/abhiruchi
+            
+            # Clean workspace keeping docs folder and the deployment tarball
+            find . -mindepth 1 ! -name docs ! -path './docs/*' ! -name deployment.tar.gz -exec rm -rf {} +
+            
+            # Extract deployment archive and remove tarball
+            tar -xzf deployment.tar.gz
+            rm -f deployment.tar.gz
+            
+            # Verify Docker runtime
+            docker version
+            docker compose version
+            
+            # Authenticate with Docker Hub on the host VM
+            echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+            
+            # Restore persistent Release History if present
+            mkdir -p docs
+            if [ -f /var/tmp/abhiruchi/RELEASE_HISTORY.md ]; then
+              cp /var/tmp/abhiruchi/RELEASE_HISTORY.md docs/RELEASE_HISTORY.md
+            fi
+            
+            # Generate target compose file from template with short git SHA
+            sed "s|IMG_TAG|${{ needs.build.outputs.sha_short }}|g" docker-compose.production.template.yml > docker-compose.production.yml
+            
+            # Validate compose config before deployment
+            docker compose -f docker-compose.production.yml config
+            
+            # Pull new production images
+            docker compose -f docker-compose.production.yml pull
+            
+            # Log out from Docker Hub
+            docker logout
+            
+            # Start containers
+            docker compose -f docker-compose.production.yml up -d --remove-orphans
+            
+            # Verify running status
+            docker compose -f docker-compose.production.yml ps
+            
+            # Multi-iteration Health Verification Loop (12 attempts x 10s = 120s max)
+            echo "Waiting for Abhiruchi services to become healthy..."
+            for i in {1..12}; do
+              if docker compose -f docker-compose.production.yml ps --filter "status=running" --filter "health=unhealthy" -q >/dev/null 2>&1; then
+                UNHEALTHY_COUNT=$(docker compose -f docker-compose.production.yml ps --filter "status=running" --filter "health=unhealthy" -q | wc -l)
+                STARTING_COUNT=$(docker compose -f docker-compose.production.yml ps --filter "status=running" --filter "health=starting" -q | wc -l)
+              else
+                UNHEALTHY_COUNT=0
+                STARTING_COUNT=0
+              fi
+              
+              # Backend API Health Check (Container internal health status + host port check)
+              BACKEND_HEALTH=0
+              BACKEND_STATUS=$(docker inspect --format='{{.State.Health.Status}}' abhiruchi-backend-prod 2>/dev/null || echo "missing")
+              [ "$BACKEND_STATUS" = "healthy" ] && BACKEND_HEALTH=1
+              
+              # Frontend Health Check
+              FRONTEND_HEALTH=0
+              curl -sf http://localhost:5179 > /dev/null 2>&1 && FRONTEND_HEALTH=1 || true
+              
+              if [ "$UNHEALTHY_COUNT" -eq 0 ] && [ "$STARTING_COUNT" -eq 0 ] && [ "$BACKEND_HEALTH" -eq 1 ] && [ "$FRONTEND_HEALTH" -eq 1 ]; then
+                echo "🎉 All Abhiruchi services (backend & frontend) are healthy!"
+                break
+              fi
+              
+              if [ "$i" -eq 12 ]; then
+                echo "❌ Health check failed after 120 seconds!"
+                docker compose -f docker-compose.production.yml ps
+                docker compose -f docker-compose.production.yml logs --tail=50
+                exit 1
+              fi
+              
+              echo "Status: $STARTING_COUNT starting, $UNHEALTHY_COUNT unhealthy, backend=$BACKEND_HEALTH, frontend=$FRONTEND_HEALTH. Retrying in 10s ($i/12)..."
+              sleep 10
+            done
+            
+            # Prune stale images older than 7 days
+            docker image prune -af --filter "until=168h" || true
+          EOF
+
+      - name: Record Release in Deployment History
+        if: success()
+        run: |
+          sshpass -p "${{ secrets.VM_PASSWORD }}" ssh -p ${{ secrets.VM_PORT }} -o StrictHostKeyChecking=no ${{ secrets.VM_USERNAME }}@${{ secrets.VM_IP }} "bash -s" << 'EOF'
+            set -euo pipefail
+            cd ~/abhiruchi
+            if [ ! -f docs/RELEASE_HISTORY.md ]; then
+              mkdir -p docs
+              echo "# Abhiruchi Release History & Deployment Ledger" > docs/RELEASE_HISTORY.md
+              echo "" >> docs/RELEASE_HISTORY.md
+              echo "| Timestamp | Image Tag (Git SHA) | Status | Description |" >> docs/RELEASE_HISTORY.md
+              echo "|---|---|---|---|" >> docs/RELEASE_HISTORY.md
+            fi
+            echo "| $(date -u +'%Y-%m-%d %H:%M:%S UTC') | ${{ needs.build.outputs.sha_short }} | SUCCESS | Stable deployment to production VM |" >> docs/RELEASE_HISTORY.md
+          EOF
+
+      - name: Persist Release History on VM
+        if: always()
+        run: |
+          sshpass -p "${{ secrets.VM_PASSWORD }}" ssh -p ${{ secrets.VM_PORT }} -o StrictHostKeyChecking=no ${{ secrets.VM_USERNAME }}@${{ secrets.VM_IP }} "bash -s" << 'EOF'
+            set -euo pipefail
+            cd ~/abhiruchi
+            if [ -f docs/RELEASE_HISTORY.md ]; then
+              mkdir -p /var/tmp/abhiruchi
+              cp docs/RELEASE_HISTORY.md /var/tmp/abhiruchi/RELEASE_HISTORY.md
+            fi
+          EOF
+
+  rollback:
+    name: Automatic rollback on deployment failure
+    needs: [build, deploy]
+    if: always() && needs.deploy.result == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install sshpass
+        run: |
+          sudo apt-get update && sudo apt-get install -y sshpass
+
+      - name: Rollback to previous healthy release
+        run: |
+          sshpass -p "${{ secrets.VM_PASSWORD }}" ssh -p ${{ secrets.VM_PORT }} -o StrictHostKeyChecking=no ${{ secrets.VM_USERNAME }}@${{ secrets.VM_IP }} "bash -s" << 'EOF'
+            set -euo pipefail
+            cd ~/abhiruchi
+            
+            if [ -f docs/RELEASE_HISTORY.md ] && grep -qE "SUCCESS|ROLLBACK_SUCCESS" docs/RELEASE_HISTORY.md; then
+              LAST_HEALTHY_TAG=$(grep -E "SUCCESS|ROLLBACK_SUCCESS" docs/RELEASE_HISTORY.md | tail -n 1 | awk -F '|' '{
+                for(i=1; i<=NF; i++) {
+                  gsub(/[[:space:]]/, "", $i);
+                  if ($i ~ /^[0-9a-f]{7}$/) {
+                    print $i;
+                    exit;
+                  }
+                }
+              }')
+              
+              if [ -z "$LAST_HEALTHY_TAG" ]; then
+                echo "⚠️ No previous healthy tag found in Release History. Cannot perform rollback."
+                exit 1
+              fi
+              
+              echo "🚨 Deployment failed! Initiating rollback to last healthy tag: $LAST_HEALTHY_TAG"
+              
+              sed "s|IMG_TAG|$LAST_HEALTHY_TAG|g" docker-compose.production.template.yml > docker-compose.production.yml
+              
+              echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+              docker compose -f docker-compose.production.yml pull
+              docker logout
+              
+              docker compose -f docker-compose.production.yml up -d --remove-orphans
+              docker compose -f docker-compose.production.yml ps
+              
+              echo "Verifying rollback services..."
+              for i in {1..12}; do
+                BACKEND_STATUS=$(docker inspect --format='{{.State.Health.Status}}' abhiruchi-backend-prod 2>/dev/null || echo "missing")
+                BACKEND_HEALTH=0
+                [ "$BACKEND_STATUS" = "healthy" ] && BACKEND_HEALTH=1
+                
+                FRONTEND_HEALTH=0
+                curl -sf http://localhost:5179 > /dev/null 2>&1 && FRONTEND_HEALTH=1 || true
+                
+                if [ "$BACKEND_HEALTH" -eq 1 ] && [ "$FRONTEND_HEALTH" -eq 1 ]; then
+                  echo "✅ Rollback deployment is healthy!"
+                  echo "| $(date -u +'%Y-%m-%d %H:%M:%S UTC') | $LAST_HEALTHY_TAG | ROLLBACK_SUCCESS | Rollback from failed ${{ needs.build.outputs.sha_short }} verified healthy |" >> docs/RELEASE_HISTORY.md
+                  exit 0
+                fi
+                
+                if [ "$i" -eq 12 ]; then
+                  echo "❌ Rollback health check failed!"
+                  echo "| $(date -u +'%Y-%m-%d %H:%M:%S UTC') | $LAST_HEALTHY_TAG | ROLLBACK_FAILED | Rollback from failed ${{ needs.build.outputs.sha_short }} failed health check |" >> docs/RELEASE_HISTORY.md
+                  exit 1
+                fi
+                
+                echo "Waiting for rollback services to stabilize (attempt $i/12)..."
+                sleep 10
+              done
+            else
+              echo "⚠️ No Release History available for automatic rollback."
+              if [ ! -f docs/RELEASE_HISTORY.md ]; then
+                mkdir -p docs
+                echo "# Abhiruchi Release History & Deployment Ledger" > docs/RELEASE_HISTORY.md
+                echo "" >> docs/RELEASE_HISTORY.md
+                echo "| Timestamp | Image Tag (Git SHA) | Status | Description |" >> docs/RELEASE_HISTORY.md
+                echo "|---|---|---|---|" >> docs/RELEASE_HISTORY.md
+              fi
+              echo "| $(date -u +'%Y-%m-%d %H:%M:%S UTC') | ${{ needs.build.outputs.sha_short }} | FAILED | Deployment failed and no rollback candidate was available |" >> docs/RELEASE_HISTORY.md
+              exit 1
+            fi
+          EOF
+
+      - name: Persist Rollback Release History
+        if: always()
+        run: |
+          sshpass -p "${{ secrets.VM_PASSWORD }}" ssh -p ${{ secrets.VM_PORT }} -o StrictHostKeyChecking=no ${{ secrets.VM_USERNAME }}@${{ secrets.VM_IP }} "bash -s" << 'EOF'
+            set -euo pipefail
+            cd ~/abhiruchi
+            if [ -f docs/RELEASE_HISTORY.md ]; then
+              mkdir -p /var/tmp/abhiruchi
+              cp docs/RELEASE_HISTORY.md /var/tmp/abhiruchi/RELEASE_HISTORY.md
+            fi
+          EOF
