@@ -1,5 +1,5 @@
 # Stage 1: Build Frontend Assets
-FROM node:18-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -23,7 +23,7 @@ ENV VITE_GROK_API_KEY=$VITE_GROK_API_KEY
 RUN npm run build
 
 # Stage 2: Production Static File Server
-FROM node:18-alpine AS runner
+FROM node:22-alpine AS runner
 
 WORKDIR /app
 
