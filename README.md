@@ -51,9 +51,9 @@ A full-stack, AI-powered adaptive assessment platform designed for evaluating te
 | :--- | :--- |
 | **Frontend Framework** | React 19, Vite, Tailwind CSS v4, Lucide Icons, React Router v6 |
 | **Backend Framework** | Node.js, Express.js (RESTful API Server) |
-| **Database** | MongoDB (Mongoose ORM) & Supabase PostgreSQL (Dual Support) |
+| **Database** | MongoDB (Mongoose ORM) |
 | **AI Integration** | Groq SDK (`groq-sdk`) featuring Llama-3 & Mixtral models |
-| **Authentication** | JWT + bcryptjs (Express Auth), Supabase OAuth (Google), optional Clerk integration |
+| **Authentication** | JWT + bcryptjs (Express Auth), optional Clerk integration |
 | **Testing & Tooling** | Playwright, ESLint 9, Nodemon |
 
 ---
@@ -80,10 +80,6 @@ gurukul-assesment/
 │   ├── scripts/                     # Seed scripts (`seed.js`, `seedUsers.js`)
 │   ├── server.js                    # Express app entry point
 │   └── package.json
-├── supabase/                        # PostgreSQL SQL Migration & RLS Policy Scripts
-│   ├── migrate_to_13_domains.sql
-│   ├── insert_70_domain_questions.sql
-│   └── verify_installation.sql
 ├── scripts/                         # Question/field generator helper scripts
 ├── package.json                     # Root workspace configuration & scripts
 └── README.md
@@ -150,10 +146,6 @@ Create a `.env` file in the `client/` directory:
 ```env
 VITE_API_BASE_URL=http://localhost:5000/api
 VITE_GROK_API_KEY=your_groq_api_key_here
-
-# Optional Supabase Integration
-VITE_SUPABASE_URL=your_supabase_url
-VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
 ```
 
 ---
@@ -215,17 +207,6 @@ The backend Express server provides the following REST API endpoints under `/api
 | `POST` | `/api/ai/evaluate` | Evaluate student responses via Groq AI Engine |
 | `GET` | `/api/categories` | Manage question categories |
 | `GET` | `/api/forms` | Get dynamic form configurations |
-
----
-
-## 📊 Supabase / PostgreSQL Setup (Optional)
-
-If using Supabase PostgreSQL alongside or in place of MongoDB:
-
-1. Open your **Supabase SQL Editor**.
-2. Run `supabase/migrate_to_13_domains.sql` to initialize domain schemas.
-3. Run `supabase/insert_70_domain_questions.sql` to load the curated domain questions.
-4. Run `supabase/verify_installation.sql` to verify database health.
 
 ---
 
