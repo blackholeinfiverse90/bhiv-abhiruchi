@@ -9,10 +9,13 @@ const generateToken = (id) => {
 };
 
 const checkDbConnected = (res) => {
+  const states = ['disconnected', 'connected', 'connecting', 'disconnecting'];
+  const currentState = states[mongoose.connection.readyState] || 'unknown';
+
   if (mongoose.connection.readyState !== 1) {
     res.status(503).json({
       success: false,
-      error: 'Database connection offline. Please whitelist your IP in MongoDB Atlas (Network Access -> 0.0.0.0/0).'
+      error: `Database connection offline (State: ${currentState}). Please check backend server .env config, MongoDB cluster status, or restart server process.`
     });
     return false;
   }
