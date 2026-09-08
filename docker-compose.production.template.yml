@@ -6,7 +6,7 @@ services:
     ports:
       - "${BACKEND_PORT:-5004}:5000"
     env_file:
-      - path: ./server/.env
+      - ./server/.env
     environment:
       - NODE_ENV=production
       - PORT=5000
