@@ -172,6 +172,14 @@ jobs:
             
             # Generate target compose file from template with short git SHA
             sed "s|IMG_TAG|${{ needs.build.outputs.sha_short }}|g" docker-compose.production.template.yml > docker-compose.production.yml
+
+            # Runtime environment variables injection
+            export MONGODB_URI='${{ secrets.MONGODB_URI }}'
+            export JWT_SECRET='${{ secrets.JWT_SECRET }}'
+            export GROQ_API_KEY='${{ secrets.GROQ_API_KEY }}'
+            export CLERK_SECRET_KEY='${{ secrets.CLERK_SECRET_KEY }}'
+            export CLERK_PUBLISHABLE_KEY='${{ secrets.CLERK_PUBLISHABLE_KEY }}'
+            export CORS_ORIGIN='http://localhost:5173,http://163.128.209:5179,https://abhiruchi.blackholeinfiverse.com'
             
             # Validate compose config before deployment
             docker compose -f docker-compose.production.yml config
