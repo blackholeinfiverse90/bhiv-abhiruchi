@@ -179,20 +179,20 @@ jobs:
             export GROQ_API_KEY='${{ secrets.GROQ_API_KEY }}'
             export CLERK_SECRET_KEY='${{ secrets.CLERK_SECRET_KEY }}'
             export CLERK_PUBLISHABLE_KEY='${{ secrets.CLERK_PUBLISHABLE_KEY }}'
-            export CORS_ORIGIN='http://localhost:5173,http://163.128.209:5179,https://abhiruchi.blackholeinfiverse.com'
-            
+            export CORS_ORIGIN='http://${{ secrets.VM_IP }}:5179,http://localhost:5179,https://abhiruchi.blackholeinfiverse.com'
+
             # Validate compose config before deployment
             docker compose -f docker-compose.production.yml config
             
             # Pull new production images
             docker compose -f docker-compose.production.yml pull
-            
+
             # Log out from Docker Hub
             docker logout
-            
-            # Start containers
-            docker compose -f docker-compose.production.yml up -d --remove-orphans
-            
+
+            # Start containers with runtime environment variables
+            docker compose -f docker-compose.production.yml up -d --force-recreate --remove-orphans
+
             # Verify running status
             docker compose -f docker-compose.production.yml ps
             
