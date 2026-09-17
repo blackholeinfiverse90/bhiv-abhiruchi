@@ -269,82 +269,54 @@ export default function Assignment({ onComplete, userId = null, userEmail = null
       // Get student data for field-based question generation
       progressCallback('Fetching student profile...', 10);
       
-      let studentData = {};
-      if (authUser) {
-        studentData = {
-          user_id: authUser.id || authUser._id,
-          name: authUser.full_name,
-          email: authUser.email,
-          field_of_study: authUser.field_of_study || authUser.intake_data?.field_of_study || 'stem',
-          responses: authUser.intake_data || {}
-        };
+      let studentData = {
+        user_id: userId || authUser?.id || authUser?._id,
+        name: authUser?.full_name,
+        email: userEmail,
+        field_of_study: authUser?.field_of_study || 'stem',
+        responses: authUser?.intake_data || {}
+      };
+
+      // 1. Read latest local intake form submission (high priority for freshly submitted intake)
+      const uId = userId || authUser?.id || authUser?._id;
+      const localIntakeStr = (uId ? localStorage.getItem('gurukul_intake_' + uId) : null) || localStorage.getItem('background_selection');
+      if (localIntakeStr) {
+        try {
+          const parsed = JSON.parse(localIntakeStr);
+          console.log('📌 Merged latest local intake form data:', parsed);
+          studentData = {
+            ...studentData,
+            ...parsed,
+            field_of_study: parsed.field_of_study || parsed.fieldOfStudy || studentData.field_of_study,
+            responses: {
+              ...studentData.responses,
+              ...parsed
+            }
+          };
+        } catch (e) {
+          console.warn('Could not parse local intake data:', e);
+        }
       }
 
+      // 2. Merge profile from MERN API
       try {
-        if (userId || authUser?.id) {
-          const profileRes = await ApiClient.get(`/students/profile/${userId || authUser?.id}`);
+        if (uId) {
+          const profileRes = await ApiClient.get(`/students/profile/${uId}`);
           if (profileRes && profileRes.data) {
-            studentData = { ...studentData, ...profileRes.data };
+            const apiData = profileRes.data;
+            const apiIntake = apiData.intake_data || {};
+            studentData = {
+              ...studentData,
+              ...apiData,
+              responses: {
+                ...apiIntake,
+                ...studentData.responses // local submission takes precedence
+              }
+            };
           }
         }
       } catch (profileErr) {
         console.warn('Could not fetch student profile from MERN API:', profileErr.message);
-      }
-
-      try {
-        let studentQuery = supabase
-          .from(SUPABASE_TABLE)
-          .select('*')
-          .limit(1);
-
-        // Prefer fetching by userId then email
-        if (userId) {
-          studentQuery = studentQuery.eq('user_id', userId);
-        } else if (userEmail) {
-          studentQuery = studentQuery.eq('email', userEmail);
-        } else {
-          studentQuery = studentQuery.order('created_at', { ascending: false });
-        }
-
-        const { data: students, error: studentError } = await studentQuery;
-
-        if (!studentError && students && students.length > 0) {
-          studentData = { ...students[0], ...studentData };
-          console.log('📊 Raw student data:', studentData);
-          console.log('🎯 Student field_of_study from responses:', studentData?.responses?.field_of_study);
-          console.log('🎯 Student field_of_study direct:', studentData?.field_of_study);
-          progressCallback('Student profile loaded successfully', 30);
-        } else {
-          console.warn('No student data found in Supabase, using current profile');
-          progressCallback('Student profile loaded successfully', 30);
-        }
-      } catch (studentError) {
-        console.warn('Could not fetch student data:', studentError);
-        progressCallback('Using current profile for question generation', 30);
-      }
-
-      // Merge background selection data for better field detection
-      progressCallback('Loading background selection...', 40);
-      try {
-        const backgroundSelection = await backgroundSelectionService.getBackgroundSelection(userId);
-        if (backgroundSelection) {
-          console.log('📋 Background selection found:', backgroundSelection);
-          // Merge background selection into student data for enhanced field detection
-          studentData = {
-            ...studentData,
-            background_field_of_study: backgroundSelection.fieldOfStudy || backgroundSelection.field_of_study,
-            background_class_level: backgroundSelection.classLevel || backgroundSelection.class_level,
-            background_learning_goals: backgroundSelection.learningGoals || backgroundSelection.learning_goals,
-            field_of_study: backgroundSelection.fieldOfStudy || backgroundSelection.field_of_study || studentData.field_of_study || studentData.responses?.field_of_study || 'stem'
-          };
-          progressCallback('Background selection merged successfully', 45);
-        } else {
-          console.log('📋 No background selection found, using student data only');
-          progressCallback('Using student data for field detection', 45);
-        }
-      } catch (bgError) {
-        console.warn('Could not fetch background selection:', bgError);
-        progressCallback('Using student data for field detection', 45);
       }
 
       progressCallback('Analyzing student background and study field...', 50);

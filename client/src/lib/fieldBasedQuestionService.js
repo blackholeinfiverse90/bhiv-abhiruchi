@@ -1,6 +1,6 @@
 // Field-based question service to replace AI generation
 
-import { ASSIGNMENT_CONFIG, DIFFICULTY_LEVELS } from "../data/assignment.js";
+import { ASSIGNMENT_CONFIG, DIFFICULTY_LEVELS, normalizeCategoryName } from "../data/assignment.js";
 import {
   QUESTION_BANKS,
   getQuestionsByCategoryAndDifficulty,
@@ -61,24 +61,31 @@ class FieldBasedQuestionService {
       const studyField = detectStudyFieldFromBackground(studentData);
       // Build education level tags for filtering (e.g., level_9..12, level_undergraduate, level_graduate, level_postgraduate)
       const levelTags = this.getStudentLevelTags(studentData);
-      // Prefer explicit field from intake/background for DB mapping; fallback to detected field
-      const mappingFieldId =
+      // Prefer detected studyField for DB mapping if STEM or fallback to explicit field
+      const rawField =
         studentData?.background_field_of_study ||
         studentData?.responses?.field_of_study ||
-        studyField;
+        studentData?.field_of_study;
+      const mappingFieldId =
+        studyField === 'stem' ? 'stem' : (rawField || studyField);
       console.log(
         `📌 Mapping field for DB queries: ${mappingFieldId} (detected: ${studyField})`
       );
 
-      // A category preference could be in responses.question_category or derived elsewhere
       const preferredCategoryRaw =
-        studentData?.responses?.question_category || null;
-      const strictCategory = !!preferredCategoryRaw;
+        studentData?.responses?.question_category ||
+        studentData?.question_category ||
+        studentData?.responses?.preferred_category ||
+        studentData?.preferred_category ||
+        null;
+      const normalizedCat = normalizeCategoryName(preferredCategoryRaw);
+      const isAllCategories = normalizedCat === "all";
+      const strictCategory = !isAllCategories;
 
       console.log(
         `🎯 Detected study field: ${studyField}, levels: ${
           levelTags.join(",") || "N/A"
-        }, preferredCategory: ${preferredCategoryRaw || "auto"}`
+        }, rawCategory: ${preferredCategoryRaw || "auto"}, normalizedCategory: ${normalizedCat}`
       );
 
       // Get weights and difficulty distribution for the field
@@ -99,17 +106,43 @@ class FieldBasedQuestionService {
       const usedQuestionTexts = new Set();
       const usedQuestionIds = new Set();
 
-      // Primary category = highest weighted category for the field, unless student picked a specific category
-      const [autoPrimaryCategory] = Object.entries(questionWeights).sort(
-        (a, b) => b[1] - a[1]
-      )[0];
-      const primaryCategory = preferredCategoryRaw || autoPrimaryCategory;
+      // Calculate target question count per category based on field weights (or strict category if requested)
+      const categoryTargets = {};
+      if (strictCategory) {
+        categoryTargets[normalizedCat] = totalQuestions;
+      } else {
+        const sortedWeights = Object.entries(questionWeights).sort(
+          (a, b) => b[1] - a[1]
+        );
+        const totalWeightSum = sortedWeights.reduce((sum, [, w]) => sum + w, 0) || 1;
+        let allocated = 0;
 
-      // Decide high-priority admin question count: 5 for <=10 total, else up to 10
-      const highPriorityCount =
-        totalQuestions <= 10
-          ? Math.min(5, totalQuestions)
-          : Math.min(10, totalQuestions);
+        const unrounded = sortedWeights.map(([cat, w]) => {
+          const rawCount = (w / totalWeightSum) * totalQuestions;
+          const count = Math.floor(rawCount);
+          return { cat, count, remainder: rawCount - count };
+        });
+
+        unrounded.forEach(item => {
+          categoryTargets[item.cat] = item.count;
+          allocated += item.count;
+        });
+
+        let remaining = totalQuestions - allocated;
+        if (remaining > 0) {
+          unrounded.sort((a, b) => b.remainder - a.remainder);
+          for (let i = 0; i < remaining; i++) {
+            const item = unrounded[i % unrounded.length];
+            categoryTargets[item.cat] = (categoryTargets[item.cat] || 0) + 1;
+          }
+        }
+
+        Object.keys(categoryTargets).forEach((k) => {
+          if (categoryTargets[k] <= 0) delete categoryTargets[k];
+        });
+      }
+
+      console.log(`📋 Target question distribution per category:`, categoryTargets);
 
       // Helper for splitting counts by difficulty according to distribution
       const splitByDifficulty = (count) => {
@@ -124,12 +157,10 @@ class FieldBasedQuestionService {
         const result = {};
         entries.forEach(([diff, weight], idx) => {
           let n = Math.round((weight / weightSum) * count);
-          // Ensure at least 1 for the predominant difficulty when count is small
           if (count > 0 && n === 0 && idx === 1 /* medium */) n = 1;
           result[diff] = n;
           allocated += n;
         });
-        // Adjust rounding errors
         const diffKeys = Object.keys(result);
         while (allocated > count) {
           for (let k of diffKeys) {
@@ -141,7 +172,6 @@ class FieldBasedQuestionService {
           }
         }
         while (allocated < count) {
-          // Prefer medium then easy then hard
           for (let k of [
             DIFFICULTY_LEVELS.MEDIUM,
             DIFFICULTY_LEVELS.EASY,
@@ -155,51 +185,6 @@ class FieldBasedQuestionService {
         return result;
       };
 
-      // Fast path: if curated DB has enough relevant questions for this category, just shuffle and return them
-      try {
-        const allDiffs = [
-          DIFFICULTY_LEVELS.EASY,
-          DIFFICULTY_LEVELS.MEDIUM,
-          DIFFICULTY_LEVELS.HARD,
-        ];
-        const poolTexts = new Set();
-        const poolIds = new Set();
-        let curatedPool = [];
-        for (const d of allDiffs) {
-          const batch = await this.getQuestionsFromDatabase(
-            primaryCategory,
-            d,
-            totalQuestions * 2,
-            [],
-            false // include admin + AI (no level filtering in fast path)
-          );
-          for (const q of batch) {
-            const nt = ((q.question_text || "").toLowerCase().replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim());
-            const qid = q.question_id || q.id;
-            if (!nt) continue;
-            if (poolTexts.has(nt)) continue;
-            if (qid && poolIds.has(qid)) continue;
-            poolTexts.add(nt);
-            if (qid) poolIds.add(qid);
-            curatedPool.push(q);
-          }
-        }
-        if (curatedPool.length >= totalQuestions) {
-          const picked = this.selectRandomQuestions(curatedPool, totalQuestions).map((q) => ({
-            ...q,
-            category: primaryCategory,
-            difficulty: q.difficulty || DIFFICULTY_LEVELS.MEDIUM,
-            type: "multiple_choice",
-            points: q.points ?? 10,
-            time_limit_seconds: q.time_limit_seconds ?? 180,
-          }));
-          console.log(`🧮 Using curated shuffled pool only: ${picked.length}/${totalQuestions} (category=${primaryCategory})`);
-          return picked;
-        }
-      } catch (curErr) {
-        console.warn("Curated fast-path failed, continuing with blended flow:", curErr?.message || curErr);
-      }
-
       // Check if AI question generation is enabled globally
       const isAIEnabled = await aiSettingsService.isAIEnabled();
       console.log(
@@ -208,361 +193,154 @@ class FieldBasedQuestionService {
         } globally`
       );
 
-      // 1) Fetch admin-managed questions mapped to the detected field, as highest priority
-      const adminQuestions = [];
+      let combined = [];
 
-      // When AI is disabled, get all available admin questions regardless of difficulty distribution
-      if (!isAIEnabled) {
-        console.log(
-          `🤖 AI disabled, fetching all available admin questions for category: ${primaryCategory}`
-        );
+      // Iterate through each target category in the distribution
+      for (const [categoryName, categoryCount] of Object.entries(categoryTargets)) {
+        if (categoryCount <= 0) continue;
 
-        // Get all admin questions for the category, trying all difficulties
-        const allDifficulties = [
-          DIFFICULTY_LEVELS.EASY,
-          DIFFICULTY_LEVELS.MEDIUM,
-          DIFFICULTY_LEVELS.HARD,
-        ];
-        let totalFetched = 0;
+        let categoryQuestions = [];
+        const diffCounts = splitByDifficulty(categoryCount);
 
-        for (const difficulty of allDifficulties) {
-          if (totalFetched >= totalQuestions) break;
-
-          const remainingNeeded = totalQuestions - totalFetched;
-
-          // Prefer field-mapped questions with grade filter
-          let dbQs = await this.getFieldMappedQuestionsFromDatabase(
-            mappingFieldId,
-            primaryCategory,
-            difficulty,
-            remainingNeeded,
-            levelTags,
-            true
-          );
-          // If not enough, fallback to category-only admin questions filtered by education level
-          if (dbQs.length < remainingNeeded) {
-            const topUp = await this.getQuestionsFromDatabase(
-              primaryCategory,
-              difficulty,
-              remainingNeeded - dbQs.length,
-              levelTags,
-              true
-            );
-            dbQs = dbQs.concat(topUp);
-          }
-
-          // Map to expected structure with metadata (deduplicated by text and id)
-          let addedNow = 0;
-          dbQs.forEach((q) => {
-            const nt = normalizeText(q.question_text);
-            const qid = q.question_id || q.id;
-            if (!nt || usedQuestionTexts.has(nt) || (qid && usedQuestionIds.has(qid))) return;
-            usedQuestionTexts.add(nt);
-            if (qid) usedQuestionIds.add(qid);
-            adminQuestions.push({
-              ...q,
-              category: primaryCategory,
-              difficulty: q.difficulty || difficulty, // Use actual difficulty from DB
-              type: "multiple_choice",
-              points: q.points ?? 10,
-              time_limit_seconds: q.time_limit_seconds ?? 180,
-            });
-            addedNow++;
-          });
-
-          totalFetched += addedNow;
-        }
-      } else {
-        // AI is enabled, use difficulty distribution for admin questions
-        const adminCounts = splitByDifficulty(highPriorityCount);
-
-        for (const [difficulty, count] of Object.entries(adminCounts)) {
-          if (count <= 0) continue;
-          // Prefer field-mapped questions with grade filter
-          let dbQs = await this.getFieldMappedQuestionsFromDatabase(
-            mappingFieldId,
-            primaryCategory,
-            difficulty,
-            count,
-            levelTags,
-            true
-          );
-          // If not enough, fallback to category-only admin questions filtered by education level
-          if (dbQs.length < count) {
-            const topUp = await this.getQuestionsFromDatabase(
-              primaryCategory,
-              difficulty,
-              count - dbQs.length,
-              levelTags,
-              true
-            );
-            dbQs = dbQs.concat(topUp);
-          }
-          // Map to expected structure with metadata (deduplicated by normalized text)
-          dbQs.forEach((q) => {
-            const nt = normalizeText(q.question_text);
-            if (!nt || usedQuestionTexts.has(nt)) return;
-            usedQuestionTexts.add(nt);
-            adminQuestions.push({
-              ...q,
-              category: primaryCategory,
-              difficulty: q.difficulty || difficulty, // Use actual difficulty from DB
-              type: "multiple_choice",
-              points: q.points ?? 10,
-              time_limit_seconds: q.time_limit_seconds ?? 180,
-            });
-          });
-        }
-      }
-
-      // 2) Generate remaining with AI only if enabled, otherwise use admin questions
-      const remainingCount = Math.max(
-        0,
-        totalQuestions - adminQuestions.length
-      );
-      const aiQuestions = [];
-
-      if (isAIEnabled && remainingCount > 0) {
-        // Using global deduplication set
-
-        const aiCounts = splitByDifficulty(remainingCount);
-
-        for (const [difficulty, count] of Object.entries(aiCounts)) {
+        // 1) Try DB fetch (admin/curated questions for this specific category)
+        for (const [diff, count] of Object.entries(diffCounts)) {
           if (count <= 0) continue;
           try {
-            const aiCategoryLabel = `${primaryCategory} | field:${mappingFieldId} | level:${
-              (levelTags || []).join(",") || "any"
-            }`;
-            const aiQsRaw = await grokService.generateUniqueQuestions(
-              aiCategoryLabel,
-              difficulty,
-              count,
-              usedQuestionTexts
-            );
-            // Remap AI questions' category back to the selected category for consistent storage/display
-            const aiQs = aiQsRaw.map((q) => ({
-              ...q,
-              category: primaryCategory,
-            }));
-            // Persist AI-generated questions for admin visibility and future reuse
-            await this.storeGeneratedQuestions(
-              aiQs,
+            let dbQs = await this.getFieldMappedQuestionsFromDatabase(
               mappingFieldId,
-              primaryCategory,
-              difficulty
-            );
-
-            const uniqueAiQs = aiQs.filter((q) => {
-              const nt = normalizeText(q.question_text);
-              if (!nt || usedQuestionTexts.has(nt)) return false;
-              usedQuestionTexts.add(nt);
-              return true;
-            });
-            aiQuestions.push(...uniqueAiQs);
-          } catch (e) {
-            console.warn(
-              `⚠️ Grok generation failed for ${primaryCategory} - ${difficulty}: ${e.message}. Falling back to curated bank.`
-            );
-            // Fallback to curated question bank if AI fails
-            const fallback = await this.getQuestionsForCategoryAndDifficulty(
-              primaryCategory,
-              difficulty,
-              count
-            );
-            const uniqueFallback = fallback.filter((q) => {
-              const nt = normalizeText(q.question_text);
-              if (!nt || usedQuestionTexts.has(nt)) return false;
-              usedQuestionTexts.add(nt);
-              return true;
-            });
-            aiQuestions.push(...uniqueFallback);
-          }
-        }
-      } else if (remainingCount > 0) {
-        // AI is disabled, fill remaining with admin questions from any difficulty
-        console.log(
-          `🤖 AI disabled, filling remaining ${remainingCount} questions with admin questions from any difficulty`
-        );
-        // Using global deduplication set
-
-        // When AI is disabled, get admin questions from any difficulty to ensure we have questions
-        const allDifficulties = [
-          DIFFICULTY_LEVELS.EASY,
-          DIFFICULTY_LEVELS.MEDIUM,
-          DIFFICULTY_LEVELS.HARD,
-        ];
-        let remainingNeeded = remainingCount;
-
-        for (const difficulty of allDifficulties) {
-          if (remainingNeeded <= 0) break;
-
-          try {
-            const adminQs = await this.getQuestionsFromDatabase(
-              primaryCategory,
-              difficulty,
-              remainingNeeded,
+              categoryName,
+              diff,
+              count,
               levelTags,
               true
             );
-            // Filter out duplicates
-            const uniqueAdminQs = adminQs.filter((q) => {
-              const normalizedText = normalizeText(q.question_text);
-              if (usedQuestionTexts.has(normalizedText)) {
-                return false;
-              }
-              usedQuestionTexts.add(normalizedText);
-              return true;
-            });
-
-            // Map to expected structure with metadata
-            uniqueAdminQs.forEach((q) =>
-              aiQuestions.push({
+            if (dbQs.length < count) {
+              const topUp = await this.getQuestionsFromDatabase(
+                categoryName,
+                diff,
+                count - dbQs.length,
+                levelTags,
+                true
+              );
+              dbQs = dbQs.concat(topUp);
+            }
+            dbQs.forEach((q) => {
+              const nt = normalizeText(q.question_text);
+              const qid = q.question_id || q.id;
+              if (!nt || usedQuestionTexts.has(nt) || (qid && usedQuestionIds.has(qid))) return;
+              usedQuestionTexts.add(nt);
+              if (qid) usedQuestionIds.add(qid);
+              categoryQuestions.push({
                 ...q,
-                category: primaryCategory,
-                difficulty: q.difficulty || difficulty, // Use actual difficulty from DB
+                category: categoryName,
+                difficulty: q.difficulty || diff,
                 type: "multiple_choice",
                 points: q.points ?? 10,
                 time_limit_seconds: q.time_limit_seconds ?? 180,
-              })
-            );
-
-            remainingNeeded -= uniqueAdminQs.length;
-          } catch (e) {
-            console.warn(
-              `⚠️ Failed to fetch admin questions for ${primaryCategory} - ${difficulty}: ${e.message}`
-            );
-          }
-        }
-      }
-
-      // Combine: admin high-priority first, then AI-generated or additional admin
-      let combined = [...adminQuestions, ...aiQuestions];
-
-      // Top-up strictly from DB with same constraints (category + optional grade)
-      if (combined.length < totalQuestions) {
-        // Using global deduplication set
-        const fillOrder = [
-          DIFFICULTY_LEVELS.MEDIUM,
-          DIFFICULTY_LEVELS.EASY,
-          DIFFICULTY_LEVELS.HARD,
-        ];
-        for (const diff of fillOrder) {
-          if (combined.length >= totalQuestions) break;
-          const remaining = totalQuestions - combined.length;
-          const pool = await this.getQuestionsFromDatabase(
-            primaryCategory,
-            diff,
-            remaining * 2,
-            levelTags,
-            true
-          );
-          const unique = pool.filter((q) => {
-            const nt = normalizeText(q.question_text);
-            return nt && !usedQuestionTexts.has(nt);
-          });
-          const candidates = unique.length ? unique : pool;
-          const pickedRaw = this.selectRandomQuestions(candidates, remaining);
-          const picked = pickedRaw
-            .filter((q) => {
-              const nt = normalizeText(q.question_text);
-              if (!nt || usedQuestionTexts.has(nt)) return false;
-              usedQuestionTexts.add(nt);
-              return true;
-            })
-            .map((q) => ({
-              ...q,
-              category: primaryCategory,
-              difficulty: q.difficulty || diff,
-              type: "multiple_choice",
-              points: q.points ?? 10,
-              time_limit_seconds: q.time_limit_seconds ?? 180,
-            }));
-          combined = combined.concat(picked);
-        }
-      }
-
-      // If strict category chosen and still short, and AI is enabled, top-up with AI
-      if (strictCategory && isAIEnabled && combined.length < totalQuestions) {
-        const remaining = totalQuestions - combined.length;
-        // Using global deduplication set
-        const aiCounts = splitByDifficulty(remaining);
-        for (const [diff, cnt] of Object.entries(aiCounts)) {
-          if (cnt <= 0) continue;
-          try {
-            const aiLabel = `${primaryCategory} | field:${mappingFieldId} | level:${
-              (levelTags || []).join(",") || "any"
-            }`;
-            const aiQsRaw = await grokService.generateUniqueQuestions(
-              aiLabel,
-              diff,
-              cnt,
-              usedQuestionTexts
-            );
-            const aiQs = aiQsRaw.map((q) => ({
-              ...q,
-              category: primaryCategory,
-            }));
-            await this.storeGeneratedQuestions(
-              aiQs,
-              mappingFieldId,
-              primaryCategory,
-              diff
-            );
-            const uniqueAiTopUp = aiQs.filter((q) => {
-              const nt = normalizeText(q.question_text);
-              if (!nt || usedQuestionTexts.has(nt)) return false;
-              usedQuestionTexts.add(nt);
-              return true;
+              });
             });
-            combined.push(...uniqueAiTopUp);
           } catch (e) {
-            console.warn(
-              `⚠️ Forced AI generation failed for ${primaryCategory} - ${diff}: ${e.message}`
-            );
+            console.warn(`⚠️ Error fetching DB questions for ${categoryName} - ${diff}:`, e.message);
           }
         }
-      }
 
-      // Curated bank fallback to top-up to totalQuestions
-      if (combined.length < totalQuestions) {
-        const remaining = totalQuestions - combined.length;
-        const curatedCounts = splitByDifficulty(remaining);
-        for (const [diff, count] of Object.entries(curatedCounts)) {
-          if (count <= 0) continue;
-          try {
-            const fromBank = await this.getQuestionsForCategoryAndDifficulty(
-              primaryCategory,
-              diff,
-              count
-            );
-            const uniqueFromBank = fromBank.filter((q) => {
-              const nt = normalizeText(q.question_text);
-              if (!nt || usedQuestionTexts.has(nt)) return false;
-              usedQuestionTexts.add(nt);
-              return true;
-            });
-            combined.push(...uniqueFromBank);
-            if (combined.length >= totalQuestions) break;
-          } catch (e) {
-            console.warn(
-              `⚠️ Curated bank fallback failed for ${primaryCategory} - ${diff}: ${e.message}`
-            );
+        // 2) Generate with AI if enabled and category target is not yet satisfied
+        const neededForCat = categoryCount - categoryQuestions.length;
+        if (isAIEnabled && neededForCat > 0) {
+          const aiCounts = splitByDifficulty(neededForCat);
+          for (const [diff, count] of Object.entries(aiCounts)) {
+            if (count <= 0) continue;
+            try {
+              const isTechCategory =
+                categoryName.toLowerCase().includes("coding") ||
+                categoryName.toLowerCase().includes("technical") ||
+                categoryName.toLowerCase().includes("programming");
+              const aiCategoryLabel = isTechCategory
+                ? `${categoryName} (Field: ${mappingFieldId})`
+                : categoryName;
+              const aiQsRaw = await grokService.generateUniqueQuestions(
+                aiCategoryLabel,
+                diff,
+                count,
+                usedQuestionTexts
+              );
+              const aiQs = aiQsRaw.map((q) => ({
+                ...q,
+                category: categoryName,
+              }));
+              await this.storeGeneratedQuestions(
+                aiQs,
+                mappingFieldId,
+                categoryName,
+                diff
+              );
+              aiQs.forEach((q) => {
+                const nt = normalizeText(q.question_text);
+                if (!nt || usedQuestionTexts.has(nt)) return;
+                usedQuestionTexts.add(nt);
+                categoryQuestions.push({
+                  ...q,
+                  category: categoryName,
+                  difficulty: q.difficulty || diff,
+                  type: "multiple_choice",
+                  points: q.points ?? 10,
+                  time_limit_seconds: q.time_limit_seconds ?? 180,
+                });
+              });
+            } catch (e) {
+              console.warn(
+                `⚠️ AI generation failed for ${categoryName} - ${diff}: ${e.message}.`
+              );
+            }
           }
         }
+
+        // 3) Curated question bank fallback for this specific category
+        const remainingForCat = categoryCount - categoryQuestions.length;
+        if (remainingForCat > 0) {
+          const bankCounts = splitByDifficulty(remainingForCat);
+          for (const [diff, count] of Object.entries(bankCounts)) {
+            if (count <= 0) continue;
+            try {
+              const fromBank = await this.getQuestionsForCategoryAndDifficulty(
+                categoryName,
+                diff,
+                count
+              );
+              fromBank.forEach((q) => {
+                const nt = normalizeText(q.question_text);
+                if (!nt || usedQuestionTexts.has(nt)) return;
+                usedQuestionTexts.add(nt);
+                categoryQuestions.push({
+                  ...q,
+                  category: categoryName,
+                });
+              });
+            } catch (e) {
+              console.warn(`⚠️ Curated bank fallback failed for ${categoryName} - ${diff}:`, e.message);
+            }
+          }
+        }
+
+        combined.push(...categoryQuestions);
       }
 
-      // If still not enough, broaden to other categories based on field weights
+      // If combined is still under totalQuestions, top up
       if (combined.length < totalQuestions) {
         const remainingNeeded = totalQuestions - combined.length;
-        const categoriesByWeight = Object.entries(questionWeights)
-          .sort((a, b) => b[1] - a[1])
-          .map(([c]) => c);
+        
+        // When user requested a specific category (e.g. Current Affairs), ONLY top up using that category!
+        const categoriesByWeight = strictCategory
+          ? [normalizedCat]
+          : Object.entries(questionWeights)
+              .sort((a, b) => b[1] - a[1])
+              .map(([c]) => c);
+
         const fillOrder = [
           DIFFICULTY_LEVELS.MEDIUM,
           DIFFICULTY_LEVELS.EASY,
           DIFFICULTY_LEVELS.HARD,
         ];
-        // Using global deduplication set
         let added = 0;
         for (const diff of fillOrder) {
           if (added >= remainingNeeded) break;
@@ -577,7 +355,10 @@ class FieldBasedQuestionService {
               for (const q of batch) {
                 const nt = normalizeText(q.question_text);
                 if (!nt || usedQuestionTexts.has(nt)) continue;
-                combined.push(q);
+                combined.push({
+                  ...q,
+                  category: cat,
+                });
                 usedQuestionTexts.add(nt);
                 added++;
                 if (added >= remainingNeeded) break;
@@ -589,12 +370,39 @@ class FieldBasedQuestionService {
             }
           }
         }
+
+        // If STILL under totalQuestions for a strict category, pull directly from static QUESTION_BANKS[normalizedCat]
+        if (strictCategory && combined.length < totalQuestions) {
+          const catBank = QUESTION_BANKS[normalizedCat] || {};
+          const catQuestions = Object.values(catBank).flat();
+          for (const q of this.shuffleArray(catQuestions)) {
+            if (combined.length >= totalQuestions) break;
+            const nt = normalizeText(q.question_text);
+            if (nt && !usedQuestionTexts.has(nt)) {
+              usedQuestionTexts.add(nt);
+              combined.push({
+                ...q,
+                category: normalizedCat
+              });
+            }
+          }
+        }
       }
 
       combined = combined.slice(0, totalQuestions);
 
       if (combined.length === 0) {
         console.warn("⚠️ No questions generated from DB/AI, generating built-in fallback question set...");
+        if (strictCategory) {
+          const catBank = QUESTION_BANKS[normalizedCat] || {};
+          const catQuestions = Object.values(catBank).flat();
+          if (catQuestions.length > 0) {
+            return this.shuffleArray(catQuestions).slice(0, totalQuestions).map(q => ({
+              ...q,
+              category: normalizedCat
+            }));
+          }
+        }
         const fallbacks = [
           {
             id: "fallback_q1",
@@ -630,56 +438,6 @@ class FieldBasedQuestionService {
           },
           {
             id: "fallback_q4",
-            question_text: "What is the result of 15 * 6?",
-            category: "Mathematics",
-            difficulty: "Easy",
-            options: ["90", "80", "95", "100"],
-            correct_answer: "90",
-            explanation: "15 multiplied by 6 equals 90."
-          },
-          {
-            id: "fallback_q5",
-            question_text: "Which keyword is used to declare a constant variable in JavaScript?",
-            category: "Coding",
-            difficulty: "Easy",
-            options: ["const", "let", "var", "static"],
-            correct_answer: "const",
-            explanation: "const creates a block-scoped read-only constant reference."
-          },
-          {
-            id: "fallback_q6",
-            question_text: "What does HTML stand for?",
-            category: "Coding",
-            difficulty: "Easy",
-            options: [
-              "HyperText Markup Language",
-              "HighText Machine Language",
-              "HyperTransfer Mark Language",
-              "Hybrid Technology Text Language"
-            ],
-            correct_answer: "HyperText Markup Language",
-            explanation: "HTML is the standard markup language for creating Web pages."
-          },
-          {
-            id: "fallback_q7",
-            question_text: "Solve for x: 3x + 9 = 24.",
-            category: "Mathematics",
-            difficulty: "Medium",
-            options: ["5", "4", "6", "3"],
-            correct_answer: "5",
-            explanation: "3x = 24 - 9 = 15 => x = 5."
-          },
-          {
-            id: "fallback_q8",
-            question_text: "Which of the following is a prime number?",
-            category: "Mathematics",
-            difficulty: "Easy",
-            options: ["17", "15", "21", "9"],
-            correct_answer: "17",
-            explanation: "17 is divisible only by 1 and 17."
-          },
-          {
-            id: "fallback_q9",
             question_text: "All humans are mortal. Socrates is human. What can be concluded?",
             category: "Logic",
             difficulty: "Easy",
@@ -693,20 +451,70 @@ class FieldBasedQuestionService {
             explanation: "Deductive reasoning: major premise + minor premise = valid conclusion."
           },
           {
-            id: "fallback_q10",
-            question_text: "Which HTTP status code represents 'Not Found'?",
-            category: "Coding",
+            id: "fallback_q5",
+            question_text: "Solve for x: 3x + 9 = 24.",
+            category: "Mathematics",
+            difficulty: "Medium",
+            options: ["5", "4", "6", "3"],
+            correct_answer: "5",
+            explanation: "3x = 24 - 9 = 15 => x = 5."
+          },
+          {
+            id: "fallback_q6",
+            question_text: "What is 15% of 200?",
+            category: "Mathematics",
             difficulty: "Easy",
-            options: ["404", "200", "500", "403"],
-            correct_answer: "404",
-            explanation: "HTTP 404 indicates the requested server resource could not be found."
+            options: ["30", "25", "35", "40"],
+            correct_answer: "30",
+            explanation: "15% of 200 = (15/100) * 200 = 30."
+          },
+          {
+            id: "fallback_q7",
+            question_text: "Which of the following is a synonym for 'happy'?",
+            category: "Language",
+            difficulty: "Easy",
+            options: ["Joyful", "Sad", "Angry", "Confused"],
+            correct_answer: "Joyful",
+            explanation: "Joyful means feeling happiness and is a synonym of happy."
+          },
+          {
+            id: "fallback_q8",
+            question_text: "Which festival is known as the 'Festival of Lights' in Indian culture?",
+            category: "Culture",
+            difficulty: "Easy",
+            options: ["Diwali", "Holi", "Dussehra", "Eid"],
+            correct_answer: "Diwali",
+            explanation: "Diwali is celebrated with oil lamps and lights, symbolizing victory of light over darkness."
+          },
+          {
+            id: "fallback_q9",
+            question_text: "What is the meaning of 'Yoga' in Sanskrit?",
+            category: "Vedic Knowledge",
+            difficulty: "Easy",
+            options: ["Union or connection", "Exercise", "Meditation", "Breathing"],
+            correct_answer: "Union or connection",
+            explanation: "Yoga comes from the Sanskrit root 'yuj' meaning to unite or connect."
+          },
+          {
+            id: "fallback_q10",
+            question_text: "Which technology has become most prominent in recent years for creating realistic conversational AI?",
+            category: "Current Affairs",
+            difficulty: "Easy",
+            options: [
+              "Large Language Models (LLMs)",
+              "Blockchain",
+              "Virtual Reality",
+              "Quantum Computing"
+            ],
+            correct_answer: "Large Language Models (LLMs)",
+            explanation: "Large Language Models like GPT have revolutionized conversational AI and NLP."
           }
         ];
         return this.shuffleArray(fallbacks).slice(0, totalQuestions);
       }
 
       console.log(
-        `✅ Generated blended set: ${combined.length} questions (admin: ${adminQuestions.length}, ai: ${aiQuestions.length}) for field ${studyField} [primary: ${primaryCategory}]`
+        `✅ Generated multi-category set: ${combined.length} questions across categories (${Object.keys(categoryTargets).join(", ")}) for field ${studyField}`
       );
       return combined;
     } catch (error) {
@@ -1147,7 +955,106 @@ class FieldBasedQuestionService {
   }
 
   /**
-   * Get questions mapped to a study field via question_field_mapping
+   * Shuffle an array using Fisher-Yates algorithm
+   */
+  shuffleArray(array) {
+    const copy = [...(array || [])];
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
+  }
+
+  /**
+   * Select random questions from a pool
+   */
+  selectRandomQuestions(array, count) {
+    const shuffled = this.shuffleArray(array);
+    return shuffled.slice(0, count);
+  }
+
+  /**
+   * Get general questions from MongoDB database by category and difficulty
+   */
+  async getQuestionsFromDatabase(
+    category,
+    difficulty,
+    count,
+    levelTags = [],
+    excludeAI = false
+  ) {
+    try {
+      const { categoryId, name: categoryName } = await this.resolveCategory(category);
+      const queryCat = categoryName || category;
+
+      let url = `/questions?category=${encodeURIComponent(queryCat)}&limit=${count * 3}`;
+      if (difficulty) {
+        url += `&difficulty=${encodeURIComponent(difficulty)}`;
+      }
+
+      const res = await ApiClient.get(url);
+      const list = res?.data || res?.questions || (Array.isArray(res) ? res : []);
+
+      if (Array.isArray(list) && list.length > 0) {
+        let pool = list.filter(q => {
+          const qCat = (q.category || q.category_id || '').toLowerCase();
+          const targetCat = (queryCat || '').toLowerCase();
+          return qCat === targetCat || targetCat.includes(qCat) || qCat.includes(targetCat);
+        });
+
+        if (excludeAI) {
+          pool = pool.filter((q) => q.created_by === 'admin' || !q.is_ai_generated);
+        }
+
+        if (pool.length > 0) {
+          console.log(`✅ MongoDB API returned ${pool.length} matching questions for ${queryCat}`);
+          return this.selectRandomQuestions(pool, count);
+        }
+      }
+    } catch (err) {
+      console.warn("MongoDB API question fetch error:", err.message);
+    }
+    return [];
+  }
+
+  /**
+   * Get questions for category and difficulty with fallback to static QUESTION_BANKS
+   */
+  async getQuestionsForCategoryAndDifficulty(category, difficulty, count) {
+    try {
+      const dbQuestions = await this.getQuestionsFromDatabase(
+        category,
+        difficulty,
+        count,
+        [],
+        false
+      );
+      if (dbQuestions && dbQuestions.length >= count) {
+        return dbQuestions;
+      }
+      if (dbQuestions && dbQuestions.length > 0) {
+        const pool = [...dbQuestions];
+        const staticBank = getQuestionsByCategoryAndDifficulty(category, difficulty);
+        (staticBank || []).forEach(q => pool.push(q));
+        return this.selectRandomQuestions(pool, count);
+      }
+    } catch (e) {
+      console.warn("Category/difficulty fetch error:", e.message);
+    }
+    const staticBank = getQuestionsByCategoryAndDifficulty(category, difficulty);
+    let pool = Array.isArray(staticBank) ? [...staticBank] : [];
+    if (pool.length < count) {
+      const allCategoryQuestions = Object.values(QUESTION_BANKS[category] || {}).flat();
+      if (allCategoryQuestions.length > 0) {
+        pool = [...allCategoryQuestions];
+      }
+    }
+    return this.selectRandomQuestions(pool, count);
+  }
+
+  /**
+   * Get questions mapped to a study field domain from MongoDB
    */
   async getFieldMappedQuestionsFromDatabase(
     fieldId,
@@ -1158,217 +1065,36 @@ class FieldBasedQuestionService {
     excludeAI = false
   ) {
     try {
-      console.log(
-        `🔍 Fetching field-mapped questions for field: ${fieldId}, category: ${category}, difficulty: ${difficulty}, count=${count}, levelTags=${
-          (levelTags || []).join(",") || "any"
-        }`
-      );
+      const { categoryId, name: categoryName } = await this.resolveCategory(category);
+      const queryCat = categoryName || category;
 
-      // 1) Find question_ids mapped to the field
-      const { data: mappings, error: mapErr } = await supabase
-        .from("question_field_mapping")
-        .select("question_id")
-        .eq("field_id", fieldId);
-
-      if (mapErr) {
-        console.warn("Mapping fetch error:", mapErr);
-        return [];
+      let url = `/questions?domain=${encodeURIComponent(fieldId)}&category=${encodeURIComponent(queryCat)}&limit=${count * 3}`;
+      if (difficulty) {
+        url += `&difficulty=${encodeURIComponent(difficulty)}`;
       }
 
-      const ids = (mappings || []).map((m) => m.question_id);
-      if (!ids.length) {
-        console.log(`❌ No questions mapped to field ${fieldId}`);
-        return [];
-      }
+      const res = await ApiClient.get(url);
+      const list = res?.data || res?.questions || (Array.isArray(res) ? res : []);
 
-      // 2) Pull questions by ids with filters
-      let query = supabase
-        .from("question_banks")
-        .select("*")
-        .in("question_id", ids)
-        .ilike("difficulty", difficulty)
-        .eq("is_active", true);
-
-      if (excludeAI) {
-        query = query.eq("created_by", "admin");
-      }
-
-      // Apply category filter (category_id preferred, fallback to legacy name)
-      try {
-        const { categoryId, name: categoryName } = await this.resolveCategory(
-          category
-        );
-        const isUUID =
-          typeof categoryId === "string" &&
-          /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(
-            categoryId || ""
-          );
-        if (isUUID) {
-          query = query.eq("category_id", categoryId);
-        } else {
-          query = query.eq("category", categoryName || category);
-        }
-      } catch {}
-
-      if (Array.isArray(levelTags) && levelTags.length > 0) {
-        query = query.overlaps("tags", levelTags);
-      }
-
-      query = query.limit(count * 3);
-      const { data, error } = await query;
-
-      if (error) {
-        console.error("Error fetching mapped questions:", error);
-        return [];
-      }
-
-      let pool = data || [];
-      // If not enough and level filter applied, try contains(tags) for jsonb arrays
-      if (
-        pool.length < count &&
-        Array.isArray(levelTags) &&
-        levelTags.length > 0
-      ) {
-        const r = await this.resolveCategory(category);
-        let containsQuery = supabase
-          .from("question_banks")
-          .select("*")
-          .in("question_id", ids)
-          .ilike("difficulty", difficulty)
-          .eq("is_active", true)
-          .limit(count * 2);
+      if (Array.isArray(list) && list.length > 0) {
+        let pool = list;
         if (excludeAI) {
-          containsQuery = containsQuery.eq("created_by", "admin");
+          pool = pool.filter((q) => q.created_by === 'admin' || !q.is_ai_generated);
         }
-        containsQuery = r.categoryId
-          ? containsQuery.eq("category_id", r.categoryId)
-          : containsQuery.eq("category", r.name || category);
-        containsQuery = containsQuery.contains("tags", levelTags);
-        const { data: containsData, error: containsErr } = await containsQuery;
-        if (!containsErr && containsData) {
-          const idset0 = new Set(pool.map((q) => q.question_id));
-          containsData.forEach((q) => {
-            if (!idset0.has(q.question_id)) pool.push(q);
-          });
+        if (pool.length > 0) {
+          console.log(`✅ MongoDB API returned ${pool.length} domain questions for field ${fieldId}`);
+          return this.selectRandomQuestions(pool, count);
         }
       }
-      // If not enough and level filter applied, try without level
-      if (
-        pool.length < count &&
-        Array.isArray(levelTags) &&
-        levelTags.length > 0
-      ) {
-        const r = await this.resolveCategory(category);
-        let noLevelQuery = supabase
-          .from("question_banks")
-          .select("*")
-          .in("question_id", ids)
-          .ilike("difficulty", difficulty)
-          .eq("is_active", true)
-          .limit(count * 2);
-        if (excludeAI) {
-          noLevelQuery = noLevelQuery.eq("created_by", "admin");
-        }
-        noLevelQuery = r.categoryId
-          ? noLevelQuery.eq("category_id", r.categoryId)
-          : noLevelQuery.eq("category", r.name || category);
-        const { data: noLevelData, error: noLevelErr } = await noLevelQuery;
-        if (!noLevelErr && noLevelData) {
-          const idset = new Set(pool.map((q) => q.question_id));
-          noLevelData.forEach((q) => {
-            if (!idset.has(q.question_id)) pool.push(q);
-          });
-        }
-      }
-      // Final fallback: ignore difficulty, keep category only (still restricted to mapped ids)
-      if (pool.length < count) {
-        const r2 = await this.resolveCategory(category);
-        let catOnlyQuery = supabase
-          .from("question_banks")
-          .select("*")
-          .in("question_id", ids)
-          .eq("is_active", true)
-          .limit(count * 3);
-        if (excludeAI) {
-          catOnlyQuery = catOnlyQuery.eq("created_by", "admin");
-        }
-        catOnlyQuery = r2.categoryId
-          ? catOnlyQuery.eq("category_id", r2.categoryId)
-          : catOnlyQuery.eq("category", r2.name || category);
-        // In admin-only mode (excludeAI), do not restrict by level tags on final category-only fallback
-        if (!excludeAI && Array.isArray(levelTags) && levelTags.length > 0) {
-          catOnlyQuery = catOnlyQuery.overlaps("tags", levelTags);
-        }
-        const { data: catOnlyData, error: catOnlyErr } = await catOnlyQuery;
-        if (!catOnlyErr && catOnlyData) {
-          const ids2 = new Set(pool.map((q) => q.question_id));
-          catOnlyData.forEach((q) => {
-            if (!ids2.has(q.question_id)) pool.push(q);
-          });
-        }
-      }
-
-      // If still not enough and we were admin-only, retry including AI-authored with same filters
-      if (pool.length < count && excludeAI) {
-        try {
-          console.log(`🧩 Admin-only mapped returned ${pool.length}/${count}. Including AI-authored questions as fallback...`);
-          const r3 = await this.resolveCategory(category);
-          let anyAIQuery = supabase
-            .from("question_banks")
-            .select("*")
-            .in("question_id", ids)
-            .eq("is_active", true)
-            .limit(count * 3);
-          anyAIQuery = r3.categoryId
-            ? anyAIQuery.eq("category_id", r3.categoryId)
-            : anyAIQuery.eq("category", r3.name || category);
-          if (difficulty) anyAIQuery = anyAIQuery.ilike("difficulty", difficulty);
-          if (Array.isArray(levelTags) && levelTags.length > 0) {
-            anyAIQuery = anyAIQuery.overlaps("tags", levelTags);
-          }
-          const { data: anyAIData, error: anyAIErr } = await anyAIQuery;
-          if (!anyAIErr && anyAIData) {
-            const idsAI = new Set(pool.map((q) => q.question_id));
-            anyAIData.forEach((q) => {
-              if (!idsAI.has(q.question_id)) pool.push(q);
-            });
-            console.log(`✅ AI-inclusive mapped fallback added ${pool.length} total questions`);
-          }
-        } catch (e) {
-          console.warn("⚠️ AI-inclusive mapped fallback failed:", e?.message || e);
-        }
-      }
-
-      console.log(
-        `✅ Successfully fetched ${pool.length} field-mapped questions for ${fieldId}`
-      );
-      return this.selectRandomQuestions(pool, count);
-    } catch (error) {
-      console.error("Database query error (mapped):", error);
-      return [];
+    } catch (err) {
+      console.warn("MongoDB API domain question fetch error:", err.message);
     }
+
+    // Fallback to general category search in MongoDB
+    return this.getQuestionsFromDatabase(category, difficulty, count, levelTags, excludeAI);
   }
 
-  /**
-   * Update question usage statistics
-   */
-  async updateQuestionStats(questionId, isCorrect, timeSeconds) {
-    try {
-      const { error } = await supabase.rpc("update_question_usage_stats", {
-        p_question_id: questionId,
-        p_is_correct: isCorrect,
-        p_time_seconds: timeSeconds,
-      });
-
-      if (error) {
-        console.error("Error updating question stats:", error);
-      }
-    } catch (error) {
-      console.error("Error updating question statistics:", error);
-    }
-  }
-
-  // Persist AI-generated questions into Supabase and map them to a study field for admin visibility
+  // Persist AI-generated questions into MongoDB API
   async storeGeneratedQuestions(
     generatedQuestions,
     fieldId,
@@ -1379,115 +1105,26 @@ class FieldBasedQuestionService {
       if (!Array.isArray(generatedQuestions) || generatedQuestions.length === 0)
         return;
 
-      // Prepare upsert payload for question_banks
-      const nowIso = new Date().toISOString();
-      const { categoryId: resolvedCategoryId, name: resolvedCategoryName } =
-        await this.resolveCategory(category);
-      const payload = generatedQuestions.map((q) => {
-        // Derive a deterministic question_id from text + category + difficulty
-        const base = `${(q.question_text || "").toLowerCase()}|${
-          resolvedCategoryName || category
-        }|${difficulty}`;
-        let hash = 0;
-        for (let i = 0; i < base.length; i++) {
-          hash = (hash << 5) - hash + base.charCodeAt(i);
-          hash |= 0;
-        }
-        const question_id = `AI_${
-          resolvedCategoryName || category
-        }_${difficulty}_${Math.abs(hash)}`;
-        return {
-          question_id,
-          category: resolvedCategoryName || category,
-          category_id: resolvedCategoryId || null,
-          difficulty,
-          question_text: q.question_text,
-          options: q.options,
-          correct_answer: q.correct_answer,
-          explanation: q.explanation || "",
-          vedic_connection: q.vedic_connection || "",
-          modern_application: q.modern_application || "",
-          tags: ["ai_generated"],
-          is_active: true,
-          created_by: "ai",
-          created_at: nowIso,
-          updated_at: nowIso,
-        };
-      });
+      const { name: resolvedCategoryName } = await this.resolveCategory(category);
+      const payload = generatedQuestions.map((q, idx) => ({
+        question_id: q.id || q.question_id || `q_ai_${Date.now()}_${idx}_${Math.random().toString(36).substr(2, 5)}`,
+        category: resolvedCategoryName || category || q.category || 'General',
+        difficulty: (difficulty || q.difficulty || 'medium').toLowerCase(),
+        question_text: q.question_text || q.text || '',
+        options: Array.isArray(q.options) ? q.options : [],
+        correct_answer: q.correct_answer || q.correctAnswer || (Array.isArray(q.options) ? q.options[0] : ''),
+        explanation: q.explanation || '',
+        vedic_connection: q.vedic_connection || '',
+        modern_application: q.modern_application || '',
+        target_domains: fieldId ? [fieldId] : [],
+        is_ai_generated: true,
+        created_by: 'grok_ai'
+      }));
 
-      // Try MERN API insertion into MongoDB
-      try {
-        for (const item of payload) {
-          await ApiClient.post('/questions', item);
-        }
-      } catch (mernErr) {
-        console.warn("MERN API storeGeneratedQuestions error:", mernErr.message);
-      }
-
-      // Upsert into question_banks in Supabase
-      const { error } = await supabase
-        .from("question_banks")
-        .upsert(payload, { onConflict: "question_id" });
-
-      if (error) {
-        console.warn("Failed to upsert AI-generated questions:", error);
-      } else {
-        // Map questions to field if provided
-        if (fieldId) {
-          const mappings = payload.map((p) => ({
-            question_id: p.question_id,
-            field_id: fieldId,
-            weight: 1,
-            is_primary: true,
-          }));
-
-          // Try upsert first, fallback to individual inserts if constraint doesn't exist
-          const { error: mapErr } = await supabase
-            .from("question_field_mapping")
-            .upsert(mappings, { onConflict: "question_id,field_id" });
-
-          if (mapErr && mapErr.code === "42P10") {
-            // Constraint doesn't exist, try individual inserts with conflict handling
-            console.log(
-              "Unique constraint not found, trying individual inserts..."
-            );
-            for (const mapping of mappings) {
-              try {
-                // Check if mapping already exists
-                const { data: existing } = await supabase
-                  .from("question_field_mapping")
-                  .select("id")
-                  .eq("question_id", mapping.question_id)
-                  .eq("field_id", mapping.field_id)
-                  .single();
-
-                if (!existing) {
-                  // Insert only if it doesn't exist
-                  const { error: insertErr } = await supabase
-                    .from("question_field_mapping")
-                    .insert([mapping]);
-
-                  if (insertErr) {
-                    console.warn(
-                      "Failed to insert question field mapping:",
-                      insertErr
-                    );
-                  }
-                }
-              } catch (err) {
-                console.warn("Error handling question field mapping:", err);
-              }
-            }
-          } else if (mapErr) {
-            console.warn(
-              "Failed to upsert AI question field mappings:",
-              mapErr
-            );
-          }
-        }
-      }
+      await ApiClient.post('/questions', payload);
+      console.log(`✅ Successfully stored ${payload.length} AI questions in MongoDB API!`);
     } catch (err) {
-      console.warn("Error storing AI-generated questions:", err);
+      console.warn('Error storing AI-generated questions in MongoDB:', err?.message || err);
     }
   }
 

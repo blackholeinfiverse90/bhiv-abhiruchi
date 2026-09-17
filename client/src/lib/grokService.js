@@ -10,15 +10,16 @@ import {
 import { DynamicQuestionCategoryService } from './dynamicQuestionCategoryService.js';
 
 const GROK_API_BASE_URL = 'https://api.groq.com/openai/v1';
-const GROK_API_KEY = import.meta.env.VITE_GROK_API_KEY;
+const GROK_API_KEY = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_GROK_API_KEY : (typeof process !== 'undefined' ? process.env?.VITE_GROK_API_KEY : '');
 
 class GrokService {
   constructor() {
+    const key = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_GROK_API_KEY : (typeof process !== 'undefined' ? process.env?.VITE_GROK_API_KEY : '');
     console.log('Environment variable check:', {
-      hasApiKey: !!import.meta.env.VITE_GROK_API_KEY,
-      apiKeyPrefix: import.meta.env.VITE_GROK_API_KEY ? import.meta.env.VITE_GROK_API_KEY.substring(0, 6) : 'missing'
+      hasApiKey: !!key,
+      apiKeyPrefix: key ? key.substring(0, 6) : 'missing'
     });
-    this.apiKey = GROK_API_KEY;
+    this.apiKey = key;
     this.baseUrl = GROK_API_BASE_URL;
     this.lastRequestTime = 0;
     this.minDelayBetweenRequests = 3000; // 3 seconds minimum between requests
@@ -73,12 +74,13 @@ class GrokService {
       throw new Error(API_ERROR_MESSAGES.API_KEY_MISSING);
     }
 
+    const customModel = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_GROQ_MODEL : (typeof process !== 'undefined' ? process.env?.VITE_GROQ_MODEL : null);
     const candidateModels = [
       'groq/compound-mini',
       'groq/compound',
-      'qwen/qwen3.6-27b',
+      'qwen/qwen3.8-27b',
       'openai/gpt-oss-20b',
-      import.meta.env.VITE_GROQ_MODEL
+      customModel
     ].filter(Boolean);
 
     let lastError = null;

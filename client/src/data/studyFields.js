@@ -115,85 +115,79 @@ export const STUDY_FIELDS = {
 // Mapping study fields to question categories with weights
 export const FIELD_QUESTION_MAPPING = {
   [STUDY_FIELDS.STEM.id]: {
-    // STEM fields get more coding, logic, and mathematics questions
     primary: ['Coding', 'Logic', 'Mathematics'],
-    secondary: ['Current Affairs', 'Vedic Knowledge'],
+    secondary: ['Current Affairs', 'Language', 'Culture', 'Vedic Knowledge'],
     weights: {
       'Coding': 35,
-      'Logic': 25,
-      'Mathematics': 25,
-      'Language': 5,
-      'Culture': 5,
-      'Vedic Knowledge': 3,
-      'Current Affairs': 2
-    }
-  },
-  [STUDY_FIELDS.BUSINESS.id]: {
-    // Business gets more logic, current affairs, and language
-    primary: ['Logic', 'Current Affairs', 'Language'],
-    secondary: ['Mathematics', 'Culture'],
-    weights: {
-      'Logic': 30,
-      'Current Affairs': 25,
-      'Language': 20,
-      'Mathematics': 10,
-      'Culture': 10,
-      'Coding': 3,
+      'Logic': 20,
+      'Mathematics': 20,
+      'Language': 10,
+      'Current Affairs': 10,
+      'Culture': 3,
       'Vedic Knowledge': 2
     }
   },
-  [STUDY_FIELDS.SOCIAL_SCIENCES.id]: {
-    // Social sciences get more language, culture, and current affairs
-    primary: ['Language', 'Culture', 'Current Affairs'],
-    secondary: ['Logic', 'Vedic Knowledge'],
-    weights: {
-      'Language': 30,
-      'Culture': 25,
-      'Current Affairs': 20,
-      'Logic': 15,
-      'Vedic Knowledge': 5,
-      'Mathematics': 3,
-      'Coding': 2
-    }
-  },
-  [STUDY_FIELDS.HEALTH_MEDICINE.id]: {
-    // Health/Medicine gets balanced questions with focus on logic and current affairs
+  [STUDY_FIELDS.BUSINESS.id]: {
     primary: ['Logic', 'Current Affairs', 'Language'],
-    secondary: ['Mathematics', 'Vedic Knowledge'],
+    secondary: ['Mathematics', 'Culture', 'Coding', 'Vedic Knowledge'],
     weights: {
-      'Logic': 30,
+      'Logic': 25,
       'Current Affairs': 20,
       'Language': 20,
       'Mathematics': 15,
-      'Vedic Knowledge': 8,
+      'Culture': 10,
+      'Coding': 5,
+      'Vedic Knowledge': 5
+    }
+  },
+  [STUDY_FIELDS.SOCIAL_SCIENCES.id]: {
+    primary: ['Language', 'Culture', 'Current Affairs'],
+    secondary: ['Logic', 'Vedic Knowledge', 'Mathematics', 'Coding'],
+    weights: {
+      'Language': 25,
+      'Culture': 20,
+      'Current Affairs': 20,
+      'Logic': 15,
+      'Vedic Knowledge': 10,
+      'Mathematics': 5,
+      'Coding': 5
+    }
+  },
+  [STUDY_FIELDS.HEALTH_MEDICINE.id]: {
+    primary: ['Logic', 'Current Affairs', 'Language'],
+    secondary: ['Mathematics', 'Vedic Knowledge', 'Culture', 'Coding'],
+    weights: {
+      'Logic': 25,
+      'Current Affairs': 20,
+      'Language': 20,
+      'Mathematics': 15,
+      'Vedic Knowledge': 10,
       'Culture': 5,
-      'Coding': 2
+      'Coding': 5
     }
   },
   [STUDY_FIELDS.CREATIVE_ARTS.id]: {
-    // Creative arts get more language, culture, and vedic knowledge
     primary: ['Language', 'Culture', 'Vedic Knowledge'],
-    secondary: ['Current Affairs', 'Logic'],
+    secondary: ['Current Affairs', 'Logic', 'Mathematics', 'Coding'],
     weights: {
-      'Language': 35,
-      'Culture': 25,
+      'Language': 25,
+      'Culture': 20,
       'Vedic Knowledge': 15,
-      'Current Affairs': 10,
-      'Logic': 10,
-      'Mathematics': 3,
-      'Coding': 2
+      'Current Affairs': 15,
+      'Logic': 15,
+      'Mathematics': 5,
+      'Coding': 5
     }
   },
   [STUDY_FIELDS.OTHER.id]: {
-    // Other fields get balanced distribution
     primary: ['Language', 'Logic', 'Current Affairs'],
-    secondary: ['Culture', 'Mathematics'],
+    secondary: ['Culture', 'Mathematics', 'Vedic Knowledge', 'Coding'],
     weights: {
       'Language': 20,
       'Logic': 20,
-      'Current Affairs': 20,
+      'Current Affairs': 15,
       'Culture': 15,
-      'Mathematics': 10,
+      'Mathematics': 15,
       'Vedic Knowledge': 10,
       'Coding': 5
     }
@@ -264,16 +258,40 @@ export function detectStudyFieldFromBackground(studentData) {
   };
 
   // Prioritize background selection data if available
-  const backgroundField = studentData.background_field_of_study;
+  const backgroundField = String(
+    studentData.background_field_of_study ||
+    studentData.field_of_study ||
+    studentData.responses?.field_of_study ||
+    studentData.responses?.background_field_of_study ||
+    ''
+  ).toLowerCase().trim();
+
   if (backgroundField) {
     console.log(`🎯 Using background selection field: ${backgroundField}`);
     // Direct mapping from background selection to study field IDs
     const fieldMapping = {
       'stem': STUDY_FIELDS.STEM.id,
+      'computer_science': STUDY_FIELDS.STEM.id,
+      'cs': STUDY_FIELDS.STEM.id,
+      'software_engineering': STUDY_FIELDS.STEM.id,
+      'web_development': STUDY_FIELDS.STEM.id,
+      'it': STUDY_FIELDS.STEM.id,
+      'tech': STUDY_FIELDS.STEM.id,
+      'technology': STUDY_FIELDS.STEM.id,
+      'engineering': STUDY_FIELDS.STEM.id,
+      'coding': STUDY_FIELDS.STEM.id,
+      'programming': STUDY_FIELDS.STEM.id,
       'business': STUDY_FIELDS.BUSINESS.id,
+      'commerce': STUDY_FIELDS.BUSINESS.id,
+      'economics': STUDY_FIELDS.BUSINESS.id,
+      'finance': STUDY_FIELDS.BUSINESS.id,
       'social_sciences': STUDY_FIELDS.SOCIAL_SCIENCES.id,
+      'humanities': STUDY_FIELDS.SOCIAL_SCIENCES.id,
+      'psychology': STUDY_FIELDS.SOCIAL_SCIENCES.id,
       'health_medicine': STUDY_FIELDS.HEALTH_MEDICINE.id,
+      'medicine': STUDY_FIELDS.HEALTH_MEDICINE.id,
       'creative_arts': STUDY_FIELDS.CREATIVE_ARTS.id,
+      'arts': STUDY_FIELDS.CREATIVE_ARTS.id,
       'other': STUDY_FIELDS.OTHER.id
     };
     
@@ -284,6 +302,7 @@ export function detectStudyFieldFromBackground(studentData) {
 
   // Fallback to text analysis if no background selection
   const field = pick(studentData.field_of_study, studentData.responses?.field_of_study);
+  const bgField = pick(studentData.background_field_of_study, studentData.responses?.background_field_of_study);
   const skills = pick(studentData.current_skills, studentData.responses?.current_skills);
   const interests = pick(studentData.interests, studentData.responses?.interests);
   const goals = pick(studentData.goals, studentData.responses?.goals);
@@ -291,14 +310,14 @@ export function detectStudyFieldFromBackground(studentData) {
   const bgGoals = pick(studentData.background_learning_goals, '');
   const bgClass = pick(studentData.background_class_level, '');
 
-  const combinedText = `${field} ${skills} ${interests} ${goals} ${edu} ${bgGoals} ${bgClass}`.toLowerCase();
+  const combinedText = `${backgroundField} ${bgField} ${field} ${skills} ${interests} ${goals} ${edu} ${bgGoals} ${bgClass}`.toLowerCase();
 
   // STEM keywords incl. common abbreviations
   const stemKeywords = [
     'computer', 'software', 'programming', 'coding', 'developer', 'data science', 'data scientist',
     'engineering', 'engineer', 'physics', 'chemistry', 'biology', 'biotech', 'mathematics', 'math',
     'science', 'technology', 'ai', 'machine learning', 'ml', 'deep learning', 'cybersecurity',
-    'cs', 'comp sci', 'it', 'ict', 'information technology'
+    'cs', 'comp sci', 'it', 'ict', 'information technology', 'web dev', 'web development'
   ];
   if (stemKeywords.some(keyword => combinedText.includes(keyword))) {
     return STUDY_FIELDS.STEM.id;

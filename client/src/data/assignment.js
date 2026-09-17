@@ -12,6 +12,20 @@ export const ASSIGNMENT_CATEGORIES = {
   CURRENT_AFFAIRS: 'Current Affairs'
 };
 
+export function normalizeCategoryName(input) {
+  if (!input) return 'all';
+  const s = String(input).toLowerCase().trim().replace(/^cat_/, '');
+  if (s === 'all' || s === 'auto' || s === 'all_categories' || s.includes('all categories')) return 'all';
+  if (s.includes('coding') || s.includes('programming') || s.includes('tech') || s === 'code') return ASSIGNMENT_CATEGORIES.CODING;
+  if (s.includes('logic') || s.includes('reasoning')) return ASSIGNMENT_CATEGORIES.LOGIC;
+  if (s.includes('math') || s.includes('quant')) return ASSIGNMENT_CATEGORIES.MATHEMATICS;
+  if (s.includes('language') || s.includes('english') || s.includes('verbal')) return ASSIGNMENT_CATEGORIES.LANGUAGE;
+  if (s.includes('culture') || s.includes('heritage')) return ASSIGNMENT_CATEGORIES.CULTURE;
+  if (s.includes('vedic') || s.includes('vedas')) return ASSIGNMENT_CATEGORIES.VEDIC_KNOWLEDGE;
+  if (s.includes('current') || s.includes('affair') || s.includes('gk') || s.includes('general_awareness')) return ASSIGNMENT_CATEGORIES.CURRENT_AFFAIRS;
+  return input;
+}
+
 export const DIFFICULTY_LEVELS = {
   EASY: 'easy',
   MEDIUM: 'medium',

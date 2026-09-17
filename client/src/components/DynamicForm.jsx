@@ -550,6 +550,7 @@ const DEFAULT_STUDY_FIELDS = [
 ];
 
 const DEFAULT_QUESTION_CATEGORIES = [
+  { value: "all", label: "🌟 All Categories (Mixed / Field-Based)" },
   { value: "coding", label: "Coding" },
   { value: "logic", label: "Logic" },
   { value: "mathematics", label: "Mathematics" },
@@ -612,13 +613,19 @@ const DEFAULT_QUESTION_CATEGORIES = [
       try {
         setLoadingCategories(true);
         const categories = await DynamicQuestionCategoryService.loadCategories();
-        let options = (categories || [])
+        let fetchedOptions = (categories || [])
           .filter((c) => c.is_active !== false)
           .sort((a, b) => (a.display_order || 0) - (b.display_order || 0))
           .map((c) => ({ value: c.category_id, label: c.name }));
 
-        if (!options || options.length === 0) {
+        let options;
+        if (!fetchedOptions || fetchedOptions.length === 0) {
           options = DEFAULT_QUESTION_CATEGORIES;
+        } else {
+          options = [
+            { value: "all", label: "🌟 All Categories (Mixed / Field-Based)" },
+            ...fetchedOptions
+          ];
         }
 
         setCategorySelectOptions(options);

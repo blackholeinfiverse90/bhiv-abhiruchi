@@ -5,9 +5,19 @@ export const getQuestions = async (req, res) => {
     const { category, difficulty, domain, limit = 50 } = req.query;
     const filter = { is_active: true };
 
-    if (category) filter.category = category;
-    if (difficulty) filter.difficulty = difficulty;
-    if (domain) filter.target_domains = { $in: [domain] };
+    if (category) {
+      const categoryRegexStr = String(category).replace(/[_\s]+/g, '[_\\s]+');
+      filter.$or = [
+        { category: new RegExp(`^${categoryRegexStr}$`, 'i') },
+        { category_id: category }
+      ];
+    }
+    if (difficulty) {
+      filter.difficulty = new RegExp(`^${difficulty}$`, 'i');
+    }
+    if (domain) {
+      filter.target_domains = { $in: [domain] };
+    }
 
     const questions = await Question.find(filter).limit(Number(limit));
     res.json({ success: true, count: questions.length, data: questions });
@@ -55,7 +65,19 @@ export const getMultiDomainQuestions = async (req, res) => {
 
 export const createQuestion = async (req, res) => {
   try {
-    const newQuestion = new Question(req.body);
+    if (Array.isArray(req.body)) {
+      const docs = req.body.map(q => ({
+        ...q,
+        question_id: q.question_id || q.id || `q_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`
+      }));
+      const inserted = await Question.insertMany(docs, { ordered: false });
+      return res.status(201).json({ success: true, count: inserted.length, data: inserted });
+    }
+    const body = {
+      ...req.body,
+      question_id: req.body.question_id || req.body.id || `q_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`
+    };
+    const newQuestion = new Question(body);
     await newQuestion.save();
     res.status(201).json({ success: true, data: newQuestion });
   } catch (error) {
