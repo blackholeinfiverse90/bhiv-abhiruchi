@@ -81,7 +81,7 @@ export default function Layout() {
               />
             </div>
             <span className="text-base sm:text-lg font-semibold tracking-wide text-white">
-              Gurukul
+              Abhiruchi
             </span>
           </Link>
 
