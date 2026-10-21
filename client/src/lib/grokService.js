@@ -8,9 +8,10 @@ import {
   getDynamicCategoryDistribution
 } from '../data/assignment.js';
 import { DynamicQuestionCategoryService } from './dynamicQuestionCategoryService.js';
+import ApiClient from './apiClient.js';
 
 const GROK_API_BASE_URL = 'https://api.groq.com/openai/v1';
-const GROK_API_KEY = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_GROK_API_KEY : (typeof process !== 'undefined' ? process.env?.VITE_GROK_API_KEY : '');
+const GROK_API_KEY = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_GROK_API_KEY : '';
 
 class GrokService {
   constructor() {
@@ -250,6 +251,21 @@ class GrokService {
   }
 
   async generateQuestions(category, difficulty, count = 5) {
+    // 1. Try server-side Uniguru / Mitra & Groq engine
+    try {
+      const res = await ApiClient.post('/ai/generate-questions', {
+        field_of_study: category,
+        difficulty,
+        count
+      });
+      if (res && res.success && Array.isArray(res.data) && res.data.length > 0) {
+        console.log(`✅ Loaded ${res.data.length} questions from backend AI engine for ${category}`);
+        return res.data;
+      }
+    } catch (backendErr) {
+      console.warn('Backend AI generation failed, falling back to direct client call:', backendErr.message);
+    }
+
     const prompt = GROK_PROMPTS.GENERATE_QUESTIONS
       .replace('{count}', count)
       .replace('{category}', category)
@@ -267,7 +283,7 @@ class GrokService {
     ];
 
     try {
-      console.log(`🎯 Generating ${count} ${category} questions at ${difficulty} difficulty...`);
+      console.log(`🎯 Generating ${count} ${category} questions at ${difficulty} difficulty via fallback...`);
       const response = await this.makeApiCallWithRetry(messages, 3000);
 
       const questions = this.cleanAndParseJson(response);

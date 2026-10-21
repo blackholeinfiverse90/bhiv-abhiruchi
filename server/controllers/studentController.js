@@ -161,3 +161,93 @@ export const getAllAttempts = async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
+
+export const deleteStudent = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const isObjectId = /^[0-9a-fA-F]{24}$/.test(id);
+
+    // Find student by _id or user_id or email
+    const student = await Student.findOne({
+      $or: [
+        ...(isObjectId ? [{ _id: id }] : []),
+        { user_id: id },
+        { email: id.toLowerCase() }
+      ]
+    });
+
+    const studentUserId = student?.user_id;
+    const studentEmail = student?.email;
+
+    // Delete Student record
+    if (student) {
+      await Student.deleteOne({ _id: student._id });
+    } else if (isObjectId) {
+      await Student.deleteOne({ _id: id });
+    }
+
+    // Delete matching User record
+    if (studentUserId && /^[0-9a-fA-F]{24}$/.test(studentUserId)) {
+      await User.deleteOne({ _id: studentUserId });
+    } else if (isObjectId) {
+      await User.deleteOne({ _id: id });
+    }
+    
+    if (studentEmail) {
+      await User.deleteOne({ email: studentEmail.toLowerCase() });
+    }
+
+    res.json({ success: true, message: 'Student and associated user account deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const cleanupDummyStudents = async (req, res) => {
+  try {
+    const { userIds, emails, deleteTestKeywords = false } = req.body;
+    let deletedCount = 0;
+
+    // Specific user IDs or emails
+    if (Array.isArray(userIds) && userIds.length > 0) {
+      const sRes = await Student.deleteMany({ user_id: { $in: userIds } });
+      const uRes = await User.deleteMany({ _id: { $in: userIds } });
+      deletedCount += (sRes.deletedCount + uRes.deletedCount);
+    }
+
+    if (Array.isArray(emails) && emails.length > 0) {
+      const lowerEmails = emails.map(e => e.toLowerCase());
+      const sRes = await Student.deleteMany({ email: { $in: lowerEmails } });
+      const uRes = await User.deleteMany({ email: { $in: lowerEmails } });
+      deletedCount += (sRes.deletedCount + uRes.deletedCount);
+    }
+
+    // Keyword purge: test, dummy, etc.
+    if (deleteTestKeywords) {
+      const testRegex = /(test|dummy|example|sample|student@gurukul\.com)/i;
+      const testUsers = await User.find({
+        role: { $ne: 'admin' }, // protect admin
+        $or: [
+          { email: testRegex },
+          { full_name: testRegex }
+        ]
+      });
+
+      const idsToDelete = testUsers.map(u => u._id);
+      const emailsToDelete = testUsers.map(u => u.email.toLowerCase());
+
+      const sRes = await Student.deleteMany({
+        $or: [
+          { user_id: { $in: idsToDelete.map(id => id.toString()) } },
+          { email: { $in: emailsToDelete } }
+        ]
+      });
+      const uRes = await User.deleteMany({ _id: { $in: idsToDelete } });
+      deletedCount += (sRes.deletedCount + uRes.deletedCount);
+    }
+
+    res.json({ success: true, message: `Successfully purged ${deletedCount} records` });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};

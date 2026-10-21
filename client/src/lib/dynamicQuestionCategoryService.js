@@ -1,4 +1,5 @@
 import { supabase } from './supabaseClient.js';
+import ApiClient from './apiClient.js';
 
 /**
  * Dynamic Question Category Service - Manages question categories dynamically from database
@@ -39,25 +40,33 @@ export class DynamicQuestionCategoryService {
    */
   static async loadCategories() {
     try {
+      // 1. Try loading from MERN Express API
+      try {
+        const res = await ApiClient.get('/categories?type=question');
+        const list = res?.data || (Array.isArray(res) ? res : []);
+        if (Array.isArray(list) && list.length > 0) {
+          this.categories = list;
+          this.buildCategoryMap();
+          return this.categories;
+        }
+      } catch (apiErr) {
+        console.warn('ApiClient /categories failed, falling back to cache/default:', apiErr.message);
+      }
+
+      // 2. Fallback to Supabase if MERN API returned empty
       const { data, error } = await supabase
         .from('question_categories')
         .select('*')
         .eq('is_active', true)
         .order('display_order', { ascending: true });
 
-      if (error) {
-        console.warn('Could not fetch question_categories table, using fallbacks:', error.message);
+      if (error || !data || data.length === 0) {
         this.initializeFallbackCategories();
         return this.categories;
       }
 
-      this.categories = Array.isArray(data) && data.length > 0 ? data : [];
-      if (this.categories.length === 0) {
-        this.initializeFallbackCategories();
-      } else {
-        this.buildCategoryMap();
-      }
-
+      this.categories = data;
+      this.buildCategoryMap();
       return this.categories;
     } catch (err) {
       console.warn('Exception loading question categories, using fallbacks:', err.message);
@@ -260,50 +269,74 @@ export class DynamicQuestionCategoryService {
   /**
    * Add a new category (admin function)
    */
+  /**
+   * Add a new category (admin function)
+   */
   static async addCategory(categoryData) {
-    const { data, error } = await supabase
-      .from('question_categories')
-      .insert([{
+    try {
+      const res = await ApiClient.post('/categories', {
         category_id: categoryData.category_id,
         name: categoryData.name,
         description: categoryData.description,
-        icon: categoryData.icon,
+        icon: categoryData.icon || 'Brain',
         color: categoryData.color,
         display_order: categoryData.display_order || 0,
-        is_active: true,
+        type: 'question',
         is_system: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      }])
-      .select()
-      .single();
+        is_active: true
+      });
 
-    if (error) throw error;
+      await this.refresh();
+      return res?.data || res;
+    } catch (err) {
+      console.warn('ApiClient addCategory failed, trying fallback:', err.message);
+      const { data, error } = await supabase
+        .from('question_categories')
+        .insert([{
+          category_id: categoryData.category_id,
+          name: categoryData.name,
+          description: categoryData.description,
+          icon: categoryData.icon,
+          color: categoryData.color,
+          display_order: categoryData.display_order || 0,
+          is_active: true,
+          is_system: false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }])
+        .select()
+        .single();
 
-    // Refresh local cache
-    await this.refresh();
-    return data;
+      if (error) throw error;
+      await this.refresh();
+      return data;
+    }
   }
 
   /**
    * Update a category (admin function)
    */
   static async updateCategory(categoryId, updates) {
-    const { data, error } = await supabase
-      .from('question_categories')
-      .update({
-        ...updates,
-        updated_at: new Date().toISOString()
-      })
-      .eq('category_id', categoryId)
-      .select()
-      .single();
+    try {
+      const res = await ApiClient.put(`/categories/${categoryId}`, updates);
+      await this.refresh();
+      return res?.data || res;
+    } catch (err) {
+      console.warn('ApiClient updateCategory failed, trying fallback:', err.message);
+      const { data, error } = await supabase
+        .from('question_categories')
+        .update({
+          ...updates,
+          updated_at: new Date().toISOString()
+        })
+        .eq('category_id', categoryId)
+        .select()
+        .single();
 
-    if (error) throw error;
-
-    // Refresh local cache
-    await this.refresh();
-    return data;
+      if (error) throw error;
+      await this.refresh();
+      return data;
+    }
   }
 
   /**
@@ -317,47 +350,30 @@ export class DynamicQuestionCategoryService {
       throw new Error(`Cannot delete system category: ${categoryId}`);
     }
 
-    // Check if category has questions assigned
-    const { count, error: countError } = await supabase
-      .from('question_banks')
-      .select('*', { count: 'exact', head: true })
-      .eq('category_id', categoryId);
+    try {
+      await ApiClient.delete(`/categories/${categoryId}`);
+      await this.refresh();
+      return true;
+    } catch (err) {
+      console.warn('ApiClient deleteCategory failed, trying fallback:', err.message);
+      const { error } = await supabase
+        .from('question_categories')
+        .delete()
+        .eq('category_id', categoryId);
 
-    if (countError) throw countError;
-
-    if (count > 0) {
-      throw new Error(`Cannot delete category - it has ${count} questions assigned`);
+      if (error) throw error;
+      await this.refresh();
+      return true;
     }
-    
-    const { error } = await supabase
-      .from('question_categories')
-      .delete()
-      .eq('category_id', categoryId);
-
-    if (error) throw error;
-
-    // Refresh local cache
-    await this.refresh();
-    return true;
   }
 
   /**
    * Reorder categories (admin function)
    */
   static async reorderCategories(categoryOrders) {
-    const updates = categoryOrders.map(({ categoryId, order }) => ({
-      category_id: categoryId,
-      display_order: order,
-      updated_at: new Date().toISOString()
-    }));
-
-    const { error } = await supabase
-      .from('question_categories')
-      .upsert(updates, { onConflict: 'category_id' });
-
-    if (error) throw error;
-
-    // Refresh local cache
+    for (const { categoryId, order } of categoryOrders) {
+      await this.updateCategory(categoryId, { display_order: order }).catch(() => {});
+    }
     await this.refresh();
     return true;
   }
@@ -370,35 +386,46 @@ export class DynamicQuestionCategoryService {
   }
 
   /**
-   * Update category weight (admin function)
-   */
-  
-  /**
    * Get questions by category ID
    */
   static async getQuestionsByCategory(categoryId) {
-    const { data, error } = await supabase
-      .from('question_banks')
-      .select('*')
-      .eq('category_id', categoryId)
-      .order('created_at', { ascending: false });
+    try {
+      const res = await ApiClient.get(`/questions?category=${encodeURIComponent(categoryId)}`);
+      return res?.data || (Array.isArray(res) ? res : []);
+    } catch (e) {
+      const { data, error } = await supabase
+        .from('question_banks')
+        .select('*')
+        .eq('category_id', categoryId)
+        .order('created_at', { ascending: false });
 
-    if (error) throw error;
-    return data || [];
+      if (error) throw error;
+      return data || [];
+    }
   }
 
   /**
    * Get questions for multiple categories
    */
   static async getQuestionsByCategories(categoryIds) {
-    const { data, error } = await supabase
-      .from('question_banks')
-      .select('*')
-      .in('category_id', categoryIds)
-      .order('created_at', { ascending: false });
+    try {
+      const results = [];
+      for (const id of categoryIds) {
+        const res = await ApiClient.get(`/questions?category=${encodeURIComponent(id)}`);
+        const list = res?.data || (Array.isArray(res) ? res : []);
+        results.push(...list);
+      }
+      return results;
+    } catch (e) {
+      const { data, error } = await supabase
+        .from('question_banks')
+        .select('*')
+        .in('category_id', categoryIds)
+        .order('created_at', { ascending: false });
 
-    if (error) throw error;
-    return data || [];
+      if (error) throw error;
+      return data || [];
+    }
   }
 }
 

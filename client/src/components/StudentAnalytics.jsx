@@ -1,13 +1,16 @@
 import {
     Eye,
     Search,
-    Users
+    Users,
+    Download,
+    FileText
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabaseClient';
 import ApiClient from '../lib/apiClient';
+import ExportService from '../lib/exportService';
 
 export default function StudentAnalytics() {
   const [loading, setLoading] = useState(true);
@@ -119,10 +122,43 @@ export default function StudentAnalytics() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <Users className="h-6 w-6 text-orange-400" />
-        <h2 className="text-xl font-semibold text-white">Student Details</h2>
+      {/* Header & Export Toolbar */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <Users className="h-6 w-6 text-orange-400" />
+          <h2 className="text-xl font-semibold text-white">Student Details & Attempts ({filteredData.length})</h2>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              try {
+                ExportService.exportAttemptsToCSV(filteredData);
+                toast.success(`Exported ${filteredData.length} assessment records to CSV`);
+              } catch (e) {
+                toast.error(e.message);
+              }
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-500/20 text-green-300 hover:bg-green-500/30 border border-green-500/30 text-xs font-semibold transition-all"
+            title="Download assessment records as CSV"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Export CSV
+          </button>
+          <button
+            onClick={() => {
+              try {
+                ExportService.exportCohortSummaryPDF(filteredData);
+              } catch (e) {
+                toast.error(e.message);
+              }
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 text-blue-300 hover:bg-blue-500/30 border border-blue-500/30 text-xs font-semibold transition-all"
+            title="Generate printable cohort PDF summary report"
+          >
+            <FileText className="w-3.5 h-3.5" />
+            Cohort PDF Report
+          </button>
+        </div>
       </div>
 
       {/* Simple Search */}
@@ -165,13 +201,29 @@ export default function StudentAnalytics() {
                   </div>
                 </div>
               </div>
-              <button
-                onClick={() => viewStudentDetails(attempt)}
-                className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-sm font-medium transition-colors"
-              >
-                <Eye className="h-4 w-4" />
-                View Details
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    try {
+                      ExportService.exportStudentScorecardPDF(attempt.students || attempt, attempt);
+                    } catch (e) {
+                      toast.error(e.message);
+                    }
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-sm font-medium transition-colors border border-white/10"
+                  title="Download / Print PDF Scorecard"
+                >
+                  <Download className="h-4 w-4" />
+                  PDF
+                </button>
+                <button
+                  onClick={() => viewStudentDetails(attempt)}
+                  className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-sm font-medium transition-colors"
+                >
+                  <Eye className="h-4 w-4" />
+                  View Details
+                </button>
+              </div>
             </div>
           </div>
         ))}
@@ -266,12 +318,28 @@ function StudentDetailsModal({ student, onClose, getSeedLevel }) {
                 Completed: {formatDate(student.completed_at)}
               </div>
             </div>
-            <button
-              onClick={onClose}
-              className="p-2 hover:bg-orange-500/20 rounded-lg transition-all duration-200 group"
-            >
-              <span className="text-white group-hover:text-orange-300 text-2xl font-light">×</span>
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => {
+                  try {
+                    ExportService.exportStudentScorecardPDF(student.students || student, student);
+                  } catch (e) {
+                    toast.error(e.message);
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 text-white rounded-lg text-xs font-semibold shadow-md transition-all"
+                title="Download / Print PDF Report Card"
+              >
+                <Download className="w-3.5 h-3.5" />
+                PDF Scorecard
+              </button>
+              <button
+                onClick={onClose}
+                className="p-2 hover:bg-orange-500/20 rounded-lg transition-all duration-200 group"
+              >
+                <span className="text-white group-hover:text-orange-300 text-2xl font-light">×</span>
+              </button>
+            </div>
           </div>
         </div>
 

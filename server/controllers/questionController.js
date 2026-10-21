@@ -87,10 +87,14 @@ export const createQuestion = async (req, res) => {
 
 export const updateQuestion = async (req, res) => {
   try {
+    const { id } = req.params;
+    const isObjectId = /^[0-9a-fA-F]{24}$/.test(id);
+    const filter = isObjectId ? { $or: [{ question_id: id }, { _id: id }] } : { question_id: id };
+
     const updated = await Question.findOneAndUpdate(
-      { question_id: req.params.id },
+      filter,
       req.body,
-      { new: true }
+      { new: true, upsert: true }
     );
     res.json({ success: true, data: updated });
   } catch (error) {
@@ -100,7 +104,16 @@ export const updateQuestion = async (req, res) => {
 
 export const deleteQuestion = async (req, res) => {
   try {
-    await Question.findOneAndUpdate({ question_id: req.params.id }, { is_active: false });
+    const { id } = req.params;
+    const isObjectId = /^[0-9a-fA-F]{24}$/.test(id);
+    const filter = isObjectId ? { $or: [{ question_id: id }, { _id: id }] } : { question_id: id };
+
+    if (req.query.permanent === 'true') {
+      await Question.deleteOne(filter);
+      return res.json({ success: true, message: 'Question permanently deleted' });
+    }
+
+    await Question.findOneAndUpdate(filter, { is_active: false });
     res.json({ success: true, message: 'Question deactivated' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });

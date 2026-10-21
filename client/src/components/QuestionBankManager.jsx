@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabaseClient';
 import ApiClient from '../lib/apiClient';
-import { Plus, Settings, Search, Filter, Brain, Code, Calculator, MessageCircle, Globe, Scroll, Newspaper, BookOpen, HelpCircle, AlertCircle, Users, Edit2, Trash2, ChevronDown } from 'lucide-react';
+import { Plus, Settings, Search, Filter, Brain, Code, Calculator, MessageCircle, Globe, Scroll, Newspaper, BookOpen, HelpCircle, AlertCircle, Users, Edit2, Trash2, ChevronDown, Upload, Sparkles } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { DynamicQuestionCategoryService } from '../lib/dynamicQuestionCategoryService';
 import { aiSettingsService } from '../lib/aiSettingsService';
@@ -179,7 +179,7 @@ function QuestionCard({ question, questionFields, studyFields, onEdit, onDelete,
   );
 }
 
-export default function QuestionBankManager() {
+export default function QuestionBankManager({ onNavigateTab } = {}) {
   const [questions, setQuestions] = useState([]);
   const [studyFields, setStudyFields] = useState([]);
   const [questionCategories, setQuestionCategories] = useState([]);
@@ -201,6 +201,15 @@ export default function QuestionBankManager() {
   const [stats, setStats] = useState({});
   const [aiEnabled, setAiEnabled] = useState(true); // This will be updated with global setting
   const [showTooltip, setShowTooltip] = useState(false); // Tooltip state
+
+  // Bulk Import state
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkJsonText, setBulkJsonText] = useState('');
+  const [bulkDomain, setBulkDomain] = useState('');
+  const [bulkCategoryDefault, setBulkCategoryDefault] = useState('');
+  const [bulkDifficultyDefault, setBulkDifficultyDefault] = useState('medium');
+  const [isBulkImporting, setIsBulkImporting] = useState(false);
+
   // Question form state
   const [qForm, setQForm] = useState({
     question_text: '',
@@ -313,18 +322,12 @@ export default function QuestionBankManager() {
       const categories = await DynamicQuestionCategoryService.getAllCategories();
       setQuestionCategories(categories);
 
-      // Load question field mappings
-      const { data: mappingsData } = await supabase
-        .from('question_field_mapping')
-        .select('question_id, field_id');
-
-      // Group by question_id
+      // Group by question_id from target_domains in question objects
       const mappings = {};
-      (mappingsData || []).forEach(mapping => {
-        if (!mappings[mapping.question_id]) {
-          mappings[mapping.question_id] = [];
+      questionsList.forEach(q => {
+        if (q.target_domains && Array.isArray(q.target_domains)) {
+          mappings[q.question_id] = q.target_domains;
         }
-        mappings[mapping.question_id].push(mapping.field_id);
       });
       setQuestionFieldMappings(mappings);
 
@@ -433,11 +436,15 @@ export default function QuestionBankManager() {
       }
       const mergedTags = Array.from(new Set([...(questionData.tags || []), ...tagsToAdd]));
 
-      // Whitelist permitted columns for question_banks upsert
+      // Whitelist permitted columns for MongoDB Question model
+      const targetDomains = Array.isArray(questionData.selectedFieldIds) && questionData.selectedFieldIds.length > 0
+        ? questionData.selectedFieldIds
+        : (Array.isArray(questionData.target_domains) ? questionData.target_domains : []);
+
       const payload = {
         question_id: questionData.question_id || `${(questionData.category || 'question').toLowerCase().replace(/\s+/g,'_')}_${Date.now()}`,
         category: String(questionData.category || '').trim(),
-        difficulty: String(questionData.difficulty || DIFFICULTY_LEVELS.EASY),
+        difficulty: String(questionData.difficulty || DIFFICULTY_LEVELS.EASY).toLowerCase(),
         question_text: String(questionData.question_text || '').trim(),
         options: Array.isArray(questionData.options) ? questionData.options.map(o => String(o || '')) : [],
         correct_answer: String(questionData.correct_answer || '').trim(),
@@ -445,37 +452,15 @@ export default function QuestionBankManager() {
         vedic_connection: String(questionData.vedic_connection || ''),
         modern_application: String(questionData.modern_application || ''),
         tags: Array.isArray(mergedTags) ? mergedTags : [],
+        target_domains: targetDomains,
         is_active: true,
-        created_by: 'admin',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        created_by: 'admin'
       };
 
-      // Upsert the question
-      const { error } = await supabase
-        .from('question_banks')
-        .upsert(payload);
-
-      if (error) throw error;
-
-      // Manage field mappings if provided
-      if (Array.isArray(questionData.selectedFieldIds)) {
-        // Clear existing mappings first
-        await supabase
-          .from('question_field_mapping')
-          .delete()
-          .eq('question_id', payload.question_id);
-
-        if (questionData.selectedFieldIds.length > 0) {
-          const mappings = questionData.selectedFieldIds.map(fieldId => ({
-            question_id: payload.question_id,
-            field_id: fieldId
-          }));
-          const { error: mapErr } = await supabase
-            .from('question_field_mapping')
-            .insert(mappings);
-          if (mapErr) throw mapErr;
-        }
+      if (editingQuestion) {
+        await ApiClient.put(`/questions/${editingQuestion.question_id || editingQuestion._id}`, payload);
+      } else {
+        await ApiClient.post('/questions', payload);
       }
 
       toast.success(editingQuestion ? 'Question updated successfully' : 'Question added successfully');
@@ -491,25 +476,19 @@ export default function QuestionBankManager() {
       loadData();
     } catch (error) {
       console.error('Error saving question:', error);
-      toast.error('Failed to save question');
+      toast.error('Failed to save question: ' + (error.message || ''));
     }
   }
 
   async function handleDeleteQuestion(question) {
     try {
-      const { error } = await supabase
-        .from('question_banks')
-        .update({ is_active: false })
-        .eq('question_id', question.question_id);
-
-      if (error) throw error;
-
+      await ApiClient.delete(`/questions/${question.question_id || question._id}`);
       toast.success('Question deleted successfully');
       setDeleteConfirm(null);
       loadData();
     } catch (error) {
       console.error('Error deleting question:', error);
-      toast.error('Failed to delete question');
+      toast.error('Failed to delete question: ' + (error.message || ''));
     }
   }
 
@@ -531,25 +510,9 @@ export default function QuestionBankManager() {
         }
       });
 
-      // Delete existing mappings
-      await supabase
-        .from('question_field_mapping')
-        .delete()
-        .eq('question_id', managingQuestion.question_id);
-
-      // Insert new mappings
-      if (selectedFields.length > 0) {
-        const mappings = selectedFields.map(fieldId => ({
-          question_id: managingQuestion.question_id,
-          field_id: fieldId
-        }));
-
-        const { error } = await supabase
-          .from('question_field_mapping')
-          .insert(mappings);
-
-        if (error) throw error;
-      }
+      await ApiClient.put(`/questions/${managingQuestion.question_id || managingQuestion._id}`, {
+        target_domains: selectedFields
+      });
 
       toast.success('Field assignments saved successfully');
       setShowFieldManager(false);
@@ -557,7 +520,70 @@ export default function QuestionBankManager() {
       loadData(); // Reload to update mappings
     } catch (error) {
       console.error('Error saving field mappings:', error);
-      toast.error('Failed to save field assignments');
+      toast.error('Failed to save field assignments: ' + (error.message || ''));
+    }
+  }
+
+  async function handleBulkImport() {
+    if (!bulkJsonText.trim()) {
+      toast.error('Please paste question JSON array or CSV');
+      return;
+    }
+    setIsBulkImporting(true);
+    try {
+      let parsed = [];
+      const trimmed = bulkJsonText.trim();
+      if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+        const raw = JSON.parse(trimmed);
+        parsed = Array.isArray(raw) ? raw : [raw];
+      } else {
+        // Simple CSV parser
+        const lines = trimmed.split('\n').filter(l => l.trim().length > 0);
+        parsed = lines.map((line, idx) => {
+          const parts = line.split(',').map(p => p.trim());
+          return {
+            question_id: `bulk_${Date.now()}_${idx}`,
+            question_text: parts[0] || `Question ${idx + 1}`,
+            options: parts.slice(1, 5).filter(Boolean),
+            correct_answer: parts[5] || parts[1] || '',
+            category: bulkCategoryDefault || 'General',
+            difficulty: bulkDifficultyDefault || 'medium'
+          };
+        });
+      }
+
+      if (parsed.length === 0) {
+        throw new Error('No valid questions found to import');
+      }
+
+      const formatted = parsed.map((q, idx) => ({
+        question_id: q.question_id || q.id || `q_${(q.category || bulkCategoryDefault || 'cat').toLowerCase().replace(/\s+/g,'_')}_${Date.now()}_${idx}`,
+        category: String(q.category || bulkCategoryDefault || 'General').trim(),
+        difficulty: String(q.difficulty || bulkDifficultyDefault || 'medium').toLowerCase(),
+        question_text: String(q.question_text || q.text || q.question || '').trim(),
+        options: Array.isArray(q.options) && q.options.length > 0 ? q.options.map(o => String(o)) : ['Option A', 'Option B', 'Option C', 'Option D'],
+        correct_answer: String(q.correct_answer || q.answer || (q.options ? q.options[0] : 'Option A')).trim(),
+        explanation: String(q.explanation || '').trim(),
+        vedic_connection: String(q.vedic_connection || '').trim(),
+        modern_application: String(q.modern_application || '').trim(),
+        target_domains: Array.isArray(q.target_domains) && q.target_domains.length > 0
+          ? q.target_domains
+          : (bulkDomain ? [bulkDomain] : []),
+        is_active: true,
+        created_by: 'admin'
+      }));
+
+      const res = await ApiClient.post('/questions', formatted);
+      const count = res?.count || formatted.length;
+      toast.success(`Successfully imported ${count} questions!`);
+      setShowBulkModal(false);
+      setBulkJsonText('');
+      loadData();
+    } catch (err) {
+      console.error('Bulk import error:', err);
+      toast.error('Bulk import failed: ' + (err.message || 'Check JSON format'));
+    } finally {
+      setIsBulkImporting(false);
     }
   }
 
@@ -644,6 +670,26 @@ export default function QuestionBankManager() {
               Add Question
             </button>
             
+            <button
+              onClick={() => setShowBulkModal(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg font-medium hover:from-blue-700 hover:to-indigo-700 transition-all shadow-md"
+              title="Bulk upload questions via JSON or CSV"
+            >
+              <Upload className="w-4 h-4" />
+              Bulk Import
+            </button>
+
+            {onNavigateTab && (
+              <button
+                onClick={() => onNavigateTab('ai-model')}
+                className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-lg font-medium hover:from-purple-700 hover:to-pink-700 transition-all shadow-md"
+                title="Generate questions using Uniguru / Mitra AI Curriculum Engine"
+              >
+                <Sparkles className="w-4 h-4" />
+                AI Generator
+              </button>
+            )}
+
             <button
               onClick={() => setShowFieldSettings(true)}
               className="flex items-center gap-2 px-4 py-2 bg-white/10 text-white rounded-lg font-medium border border-white/20 hover:bg-white/20 transition-all"
@@ -1210,6 +1256,137 @@ export default function QuestionBankManager() {
                   Add New Field
                 </button>
               </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Bulk Import Modal */}
+      {showBulkModal && createPortal(
+        <div 
+          className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn"
+          onClick={() => setShowBulkModal(false)}
+        >
+          <div 
+            className="bg-gray-900 rounded-2xl border border-white/20 w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4 border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2">
+                <Upload className="w-5 h-5 text-orange-400" />
+                <h3 className="text-xl font-bold text-white">Bulk Import Questions</h3>
+              </div>
+              <button 
+                onClick={() => setShowBulkModal(false)}
+                className="text-white/60 hover:text-white p-1 rounded-lg"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-sm text-white/70 mb-4">
+              Paste a JSON array of questions or standard CSV format (one question per line).
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+              <div>
+                <label className="block text-xs font-medium text-white/80 mb-1">Target Domain / Field</label>
+                <select
+                  value={bulkDomain}
+                  onChange={(e) => setBulkDomain(e.target.value)}
+                  className="w-full bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm text-white"
+                >
+                  <option value="">Auto / Multi-domain</option>
+                  {studyFields.map(f => (
+                    <option key={f.field_id} value={f.field_id}>{f.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-white/80 mb-1">Default Category</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Coding, IoT"
+                  value={bulkCategoryDefault}
+                  onChange={(e) => setBulkCategoryDefault(e.target.value)}
+                  className="w-full bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-white/80 mb-1">Default Difficulty</label>
+                <select
+                  value={bulkDifficultyDefault}
+                  onChange={(e) => setBulkDifficultyDefault(e.target.value)}
+                  className="w-full bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm text-white"
+                >
+                  <option value="easy">Easy</option>
+                  <option value="medium">Medium</option>
+                  <option value="hard">Hard</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="mb-4">
+              <div className="flex justify-between items-center mb-1">
+                <label className="text-xs font-medium text-white/80">Question Data (JSON or CSV)</label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const sample = [
+                      {
+                        question_text: "What does MQTT stand for in IoT?",
+                        options: ["A) Message Queuing Telemetry Transport", "B) Multi-Queue Transfer Time", "C) Mobile Quality Test Tool", "D) Main Query Transmission Task"],
+                        correct_answer: "A) Message Queuing Telemetry Transport",
+                        category: "IoT",
+                        difficulty: "easy",
+                        explanation: "MQTT is standard lightweight publish/subscribe protocol.",
+                        vedic_connection: "Concise transmission of essential meaning.",
+                        modern_application: "IoT sensors and edge telemetry."
+                      }
+                    ];
+                    setBulkJsonText(JSON.stringify(sample, null, 2));
+                  }}
+                  className="text-xs text-orange-400 hover:text-orange-300 underline"
+                >
+                  Insert Sample JSON
+                </button>
+              </div>
+              <textarea
+                rows={10}
+                value={bulkJsonText}
+                onChange={(e) => setBulkJsonText(e.target.value)}
+                placeholder='[
+  {
+    "question_text": "Sample question text here?",
+    "options": ["A) Opt 1", "B) Opt 2", "C) Opt 3", "D) Opt 4"],
+    "correct_answer": "A) Opt 1",
+    "category": "IoT",
+    "difficulty": "medium"
+  }
+]'
+                className="w-full bg-black/40 border border-white/20 rounded-xl p-3 text-sm text-white font-mono focus:outline-none focus:ring-2 focus:ring-orange-500"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-white/10">
+              <button
+                type="button"
+                onClick={() => setShowBulkModal(false)}
+                className="px-4 py-2 text-sm rounded-lg bg-white/10 text-white/80 hover:bg-white/20 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleBulkImport}
+                disabled={isBulkImporting}
+                className="flex items-center gap-2 px-5 py-2 text-sm font-semibold rounded-lg bg-gradient-to-r from-orange-500 to-red-500 text-white hover:from-orange-600 hover:to-red-600 transition-all disabled:opacity-50"
+              >
+                {isBulkImporting ? 'Importing...' : 'Upload & Save Questions'}
+              </button>
             </div>
           </div>
         </div>,

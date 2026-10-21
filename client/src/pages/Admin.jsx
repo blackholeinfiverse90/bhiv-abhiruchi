@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { createPortal } from 'react-dom';
-import { Trash2 } from 'lucide-react';
+import { Trash2, Download, FileText, Sparkles, Bot } from 'lucide-react';
 import toast from "react-hot-toast";
 import FormBuilder from "../components/FormBuilder";
 import QuestionBankManager from "../components/QuestionBankManager";
@@ -8,11 +8,13 @@ import StudentAnalytics from "../components/StudentAnalytics";
 import DatabaseTest from "../components/DatabaseTest";
 import CategoryManager from "../components/CategoryManager";
 import QuestionCategoryManager from "../components/QuestionCategoryManager";
+import AIModelConfig from "../components/AIModelConfig";
 import { adminAuth } from "../config/admin";
 import { FormConfigService } from "../lib/formConfigService";
 import { supabase, SUPABASE_TABLE } from "../lib/supabaseClient";
 import { useAuth } from "../context/AuthContext";
 import ApiClient from "../lib/apiClient";
+import ExportService from "../lib/exportService";
 
 const EmptyState = ({ onAdd }) => (
   <div className="flex flex-col items-center justify-center py-16 text-center text-white">
@@ -488,36 +490,15 @@ export default function Admin() {
   async function confirmStudentDelete() {
     if (!studentDeleteConfirm) return;
 
-    const loadingToast = toast.loading("Deleting student and all related data...");
+    const loadingToast = toast.loading("Deleting student and account data...");
     setLoading(true);
 
     try {
-      // Delete student record - this will cascade to assignment_attempts and assignment_responses
-      // due to ON DELETE CASCADE foreign key constraints
-      const { error: studentErr } = await supabase
-        .from(SUPABASE_TABLE)
-        .delete()
-        .eq("id", studentDeleteConfirm.id);
-
-      if (studentErr) {
-        throw new Error(`Failed to delete student: ${studentErr.message}`);
-      }
-
-      // Delete background selection if it exists (uses user_id, not student_id)
-      if (studentDeleteConfirm.user_id) {
-        const { error: bgErr } = await supabase
-          .from("background_selections")
-          .delete()
-          .eq("user_id", studentDeleteConfirm.user_id);
-
-        if (bgErr) {
-          console.warn("Failed to delete background selection:", bgErr.message);
-          // Don't fail the entire operation for this
-        }
-      }
+      const deleteId = studentDeleteConfirm.user_id || studentDeleteConfirm.id;
+      await ApiClient.delete(`/students/${deleteId}`);
 
       toast.success(
-        `Student "${studentDeleteConfirm.name}" and all related data deleted successfully`, 
+        `Student "${studentDeleteConfirm.name}" deleted successfully`, 
         { id: loadingToast }
       );
       fetchStudents();
@@ -529,6 +510,40 @@ export default function Admin() {
 
     setLoading(false);
     setStudentDeleteConfirm(null);
+  }
+
+  async function handlePurgeTestAccounts() {
+    const isConfirmed = window.confirm(
+      "Are you sure you want to clean up all test/dummy student accounts? (Accounts matching 'test', 'dummy', 'student@gurukul.com' will be permanently deleted from MongoDB. Admin accounts are preserved.)"
+    );
+    if (!isConfirmed) return;
+
+    const loadingToast = toast.loading("Purging test accounts...");
+    try {
+      const res = await ApiClient.post("/students/cleanup-dummy", { deleteTestKeywords: true });
+      toast.success(res?.message || "Test accounts purged successfully", { id: loadingToast });
+      fetchStudents();
+    } catch (err) {
+      toast.error(err.message || "Failed to purge test accounts", { id: loadingToast });
+    }
+  }
+
+  function handleExportStudentsCSV() {
+    try {
+      ExportService.exportStudentsToCSV(filtered);
+      toast.success(`Exported ${filtered.length} student records to CSV`);
+    } catch (err) {
+      toast.error(err.message || "Export failed");
+    }
+  }
+
+  function handleExportStudentsJSON() {
+    try {
+      ExportService.exportAllToJSON({ students: filtered }, 'gurukul_students_backup');
+      toast.success(`Exported ${filtered.length} student records to JSON`);
+    } catch (err) {
+      toast.error(err.message || "Export failed");
+    }
   }
 
   if (!isAdmin) {
@@ -557,6 +572,22 @@ export default function Admin() {
               </button>
               <button onClick={openAdd} className="btn btn-primary">
                 Add Student
+              </button>
+              <button
+                onClick={handleExportStudentsCSV}
+                className="btn bg-green-500/20 text-green-300 hover:bg-green-500/30 border border-green-500/30 flex items-center gap-1.5"
+                title="Export student intake submissions to CSV"
+              >
+                <Download className="w-4 h-4" />
+                Export CSV
+              </button>
+              <button
+                onClick={handleExportStudentsJSON}
+                className="btn bg-blue-500/20 text-blue-300 hover:bg-blue-500/30 border border-blue-500/30 flex items-center gap-1.5"
+                title="Export all student records to JSON"
+              >
+                <FileText className="w-4 h-4" />
+                Export JSON
               </button>
             </>
           )}
@@ -668,6 +699,17 @@ export default function Admin() {
             Question Categories
           </button>
           <button
+            onClick={() => setActiveTab("ai-model")}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 ${
+              activeTab === "ai-model"
+                ? "border-orange-500 text-orange-400"
+                : "border-transparent text-white/70 hover:text-white"
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-orange-400" />
+            AI Model (Uniguru/Mitra)
+          </button>
+          <button
             onClick={() => setActiveTab("database-test")}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
               activeTab === "database-test"
@@ -710,50 +752,53 @@ export default function Admin() {
           ) : students.length === 0 ? (
             <EmptyState onAdd={openAdd} />
           ) : (
-            <div className="table-wrap">
-              <table className="table">
-                <thead className="bg-white/10">
+            <div className="table-wrap overflow-x-auto">
+              <table className="w-full text-left text-sm text-white/90">
+                <thead className="bg-white/10 text-xs uppercase tracking-wider text-white/70 border-b border-white/10">
                   <tr>
-                    <th className="px-3 py-2 sm:px-4 sm:py-3 font-medium text-white/70">
-                      Name
-                    </th>
-                    <th className="hidden sm:table-cell px-3 py-2 sm:px-4 sm:py-3 font-medium text-white/70">
-                      Grade
-                    </th>
-                    <th className="hidden md:table-cell px-3 py-2 sm:px-4 sm:py-3 font-medium text-white/70">
-                      Student ID
-                    </th>
-                    <th className="hidden lg:table-cell px-3 py-2 sm:px-4 sm:py-3 font-medium text-white/70">
-                      Email
-                    </th>
-                    <th className="px-3 py-2 sm:px-4 sm:py-3 font-medium text-white/70">
-                      Tier
-                    </th>
-                    <th className="hidden lg:table-cell px-3 py-2 sm:px-4 sm:py-3 font-medium text-white/70">
-                      Created
-                    </th>
-                    <th className="px-3 py-2 sm:px-4 sm:py-3 font-medium text-white/70">
-                      Actions
-                    </th>
+                    <th className="px-4 py-3 font-semibold">Student</th>
+                    <th className="px-4 py-3 font-semibold">Actions</th>
+                    <th className="px-3 py-3 font-semibold">Grade</th>
+                    <th className="hidden sm:table-cell px-3 py-3 font-semibold">Student ID</th>
+                    <th className="px-3 py-3 font-semibold">Tier</th>
+                    <th className="hidden md:table-cell px-3 py-3 font-semibold">Joined</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="divide-y divide-white/10">
                   {filtered.map((s) => (
                     <tr
-                      key={s.id}
-                      className="border-t border-white/10 hover:bg-white/5 transition-colors"
+                      key={s.id || s._id}
+                      className="hover:bg-white/5 transition-colors"
                     >
-                      <td className="px-3 py-2 sm:px-4 sm:py-3">{s.name}</td>
-                      <td className="hidden sm:table-cell px-3 py-2 sm:px-4 sm:py-3">
-                        {s.grade}
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-white">{s.name || 'Unnamed Student'}</div>
+                        <div className="text-xs text-white/60 truncate max-w-[180px] sm:max-w-xs">{s.email || '—'}</div>
                       </td>
-                      <td className="hidden md:table-cell px-3 py-2 sm:px-4 sm:py-3">
-                        {s.student_id}
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => openEdit(s)}
+                            className="btn px-2.5 py-1 text-xs"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => onDelete(s)}
+                            className="btn px-2.5 py-1 text-xs text-red-300 hover:text-white bg-red-500/20 hover:bg-red-600 border border-red-500/40 flex items-center gap-1 font-medium transition-all shadow-sm"
+                            title={`Delete student account for ${s.name}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                            Delete
+                          </button>
+                        </div>
                       </td>
-                      <td className="hidden lg:table-cell px-3 py-2 sm:px-4 sm:py-3">
-                        {s.email}
+                      <td className="px-3 py-3 text-white/80 whitespace-nowrap">
+                        {s.grade || '—'}
                       </td>
-                      <td className="px-3 py-2 sm:px-4 sm:py-3">
+                      <td className="hidden sm:table-cell px-3 py-3 text-white/70 font-mono text-xs whitespace-nowrap">
+                        {s.student_id || '—'}
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap">
                         {s.tier ? (
                           <span
                             className={`rounded-md px-2 py-0.5 text-xs border ${
@@ -772,26 +817,10 @@ export default function Admin() {
                           <span className="text-white/50 text-xs">—</span>
                         )}
                       </td>
-                      <td className="hidden lg:table-cell px-3 py-2 sm:px-4 sm:py-3 whitespace-nowrap">
+                      <td className="hidden md:table-cell px-3 py-3 text-white/60 text-xs whitespace-nowrap">
                         {s.created_at
-                          ? new Date(s.created_at).toLocaleString()
-                          : ""}
-                      </td>
-                      <td className="px-3 py-2 sm:px-4 sm:py-3">
-                        <div className="flex items-center gap-1.5 sm:gap-2">
-                          <button
-                            onClick={() => openEdit(s)}
-                            className="btn px-3 py-1 text-xs"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => onDelete(s)}
-                            className="btn px-3 py-1 text-xs"
-                          >
-                            Delete
-                          </button>
-                        </div>
+                          ? new Date(s.created_at).toLocaleDateString()
+                          : "—"}
                       </td>
                     </tr>
                   ))}
@@ -1078,21 +1107,38 @@ export default function Admin() {
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-end gap-2 pt-4">
-                    <button
-                      type="button"
-                      onClick={() => setDrawerOpen(false)}
-                      className="btn"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={loading}
-                      className="btn btn-primary"
-                    >
-                      {isEditing ? "Save Changes" : "Create"}
-                    </button>
+                  <div className="flex items-center justify-between gap-2 pt-4 border-t border-white/10">
+                    {isEditing ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDrawerOpen(false);
+                          onDelete(form);
+                        }}
+                        className="btn px-3 py-1.5 text-xs text-red-300 hover:text-white bg-red-500/20 hover:bg-red-600 border border-red-500/30 flex items-center gap-1.5 transition-all"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                        Delete Student
+                      </button>
+                    ) : (
+                      <div />
+                    )}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setDrawerOpen(false)}
+                        className="btn"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={loading}
+                        className="btn btn-primary"
+                      >
+                        {isEditing ? "Save Changes" : "Create"}
+                      </button>
+                    </div>
                   </div>
                 </form>
               </div>
@@ -1358,7 +1404,7 @@ export default function Admin() {
       {/* Question Banks Tab */}
       {activeTab === "question-banks" && (
         <div className="card">
-          <QuestionBankManager />
+          <QuestionBankManager onNavigateTab={(tab) => setActiveTab(tab)} />
         </div>
       )}
 
@@ -1373,6 +1419,13 @@ export default function Admin() {
       {activeTab === "question-categories" && (
         <div className="card">
           <QuestionCategoryManager />
+        </div>
+      )}
+
+      {/* AI Model (Uniguru/Mitra) Tab */}
+      {activeTab === "ai-model" && (
+        <div className="card">
+          <AIModelConfig />
         </div>
       )}
 
