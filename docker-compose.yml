@@ -51,7 +51,8 @@ services:
       context: ./client
       dockerfile: Dockerfile
       args:
-        - VITE_API_BASE_URL=http://localhost:5000/api
+        - VITE_API_BASE_URL=${VITE_API_BASE_URL:-https://gurukul.blackholeinfiverse.com/api}
+        - VITE_PRAVESH_URL=${VITE_PRAVESH_URL:-https://pravesh.blackholeinfiverse.com}
         - VITE_GROK_API_KEY=${VITE_GROK_API_KEY:-}
     container_name: abhiruchi-frontend-dev
     restart: unless-stopped

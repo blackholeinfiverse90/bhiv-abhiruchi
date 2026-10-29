@@ -62,7 +62,8 @@ The system cleanly segregates configuration into two primary layers:
 ### 3.2 Frontend Environment (`client/.env`)
 | Variable | Description | Example / Default |
 | :--- | :--- | :--- |
-| `VITE_API_BASE_URL` | Backend API base URL for client requests | `http://localhost:5004/api` |
+| `VITE_API_BASE_URL` | Backend API base URL for client requests | `https://gurukul.blackholeinfiverse.com/api` |
+| `VITE_PRAVESH_URL` | Pravesh Single Auth SSO base URL | `https://pravesh.blackholeinfiverse.com` |
 | `VITE_GROK_API_KEY` | Groq AI API key for client-side assistance | `gsk_...` |
 
 ---
@@ -143,7 +144,8 @@ Configure the following secrets in GitHub Repository Settings (`Settings` -> `Se
 | `ABHIRUCHI_FRONTEND_ENV_FILE`| Complete `client/.env` contents for production | Multi-line text |
 | `MONGODB_URI` | MongoDB connection URI | `mongodb://localhost:27017/gurukul_assessment` |
 | `GROQ_API_KEY` | Groq API Key | `gsk_...` |
-| `VITE_API_BASE_URL` | Public / VM API Base URL | `http://<VM_IP>:5004/api` |
+| `VITE_API_BASE_URL` | Public API Base URL | `https://gurukul.blackholeinfiverse.com/api` |
+| `VITE_PRAVESH_URL` | Pravesh SSO Auth URL | `https://pravesh.blackholeinfiverse.com` |
 | `VITE_GROK_API_KEY` | Groq Key for Frontend build | `gsk_...` |
 
 ---

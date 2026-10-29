@@ -68,20 +68,30 @@ jobs:
 
       - name: Build and push abhiruchi-frontend image
         run: |
+          # Priority 1: Direct secrets
           VITE_API_BASE_URL="${{ secrets.VITE_API_BASE_URL }}"
-          if [ -z "$VITE_API_BASE_URL" ]; then
-            VITE_API_BASE_URL="https://abhiruchi.blackholeinfiverse.com/api"
-          fi
-          
-          VITE_GROK_API_KEY="${{ secrets.VITE_GROK_API_KEY }}"
-          if [ -z "$VITE_GROK_API_KEY" ]; then
-            VITE_GROK_API_KEY="${{ secrets.GROQ_API_KEY }}"
+          VITE_PRAVESH_URL="${{ secrets.VITE_PRAVESH_URL }}"
+          VITE_GROK_API_KEY="${{ secrets.VITE_GROK_API_KEY || secrets.GROQ_API_KEY }}"
+
+          # Priority 2: Extract from ABHIRUCHI_FRONTEND_ENV_FILE secret if not set directly
+          FRONTEND_SECRET="${{ secrets.ABHIRUCHI_FRONTEND_ENV_FILE }}"
+          if [ -n "$FRONTEND_SECRET" ]; then
+            if [ -z "$VITE_API_BASE_URL" ]; then
+              VITE_API_BASE_URL=$(echo "$FRONTEND_SECRET" | grep '^VITE_API_BASE_URL=' | cut -d '=' -f2- || true)
+            fi
+            if [ -z "$VITE_PRAVESH_URL" ]; then
+              VITE_PRAVESH_URL=$(echo "$FRONTEND_SECRET" | grep '^VITE_PRAVESH_URL=' | cut -d '=' -f2- || true)
+            fi
+            if [ -z "$VITE_GROK_API_KEY" ]; then
+              VITE_GROK_API_KEY=$(echo "$FRONTEND_SECRET" | grep '^VITE_GROK_API_KEY=' | cut -d '=' -f2- || true)
+            fi
           fi
 
           docker buildx build --push \
             --tag bhiv/abhiruchi-frontend:${{ steps.vars.outputs.sha_short }} \
             --tag bhiv/abhiruchi-frontend:latest \
             --build-arg VITE_API_BASE_URL="$VITE_API_BASE_URL" \
+            --build-arg VITE_PRAVESH_URL="$VITE_PRAVESH_URL" \
             --build-arg VITE_GROK_API_KEY="$VITE_GROK_API_KEY" \
             -f client/Dockerfile client
 
@@ -123,7 +133,8 @@ jobs:
           EOF
           else
             cat <<EOF > client/.env
-          VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL || 'https://abhiruchi.blackholeinfiverse.com/api' }}
+          VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}
+          VITE_PRAVESH_URL=${{ secrets.VITE_PRAVESH_URL }}
           VITE_GROK_API_KEY=${{ secrets.VITE_GROK_API_KEY || secrets.GROQ_API_KEY }}
           EOF
           fi
