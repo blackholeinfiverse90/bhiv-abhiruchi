@@ -17,6 +17,21 @@ export default function Layout() {
   const navigate = useNavigate();
   const isHome = location.pathname === "/";
 
+  // Dynamic Page Title based on route
+  React.useEffect(() => {
+    const titles = {
+      "/": "Abhiruchi | Gurukul Home",
+      "/dashboard": "Abhiruchi | Student Dashboard",
+      "/intake": "Abhiruchi | Candidate Intake Dossier",
+      "/assignment": "Abhiruchi | Assessment and Evaluation",
+      "/multi-domain-test": "Abhiruchi | Multi-Domain Assessment",
+      "/admin": "Abhiruchi | Admin Control Center",
+      "/sign-in": "Abhiruchi | Sign In",
+      "/sign-up": "Abhiruchi | Register"
+    };
+    document.title = titles[location.pathname] || "Abhiruchi | Gurukul Assessment and Intake";
+  }, [location.pathname]);
+
   // Language selection state using i18n
   const { t, lang } = useI18n();
   const [isLangOpen, setIsLangOpen] = useState(false);
@@ -203,6 +218,18 @@ export default function Layout() {
               </button>
             ) : isAuthenticated ? (
               <div className="flex items-center gap-2">
+                {user?.email && (
+                  <a
+                    href={`${import.meta.env.VITE_PRAVESH_URL || "http://localhost:5174"}/login?email=${encodeURIComponent(user.email)}&auto=true`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rounded-full bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:opacity-90 text-white px-3.5 py-1.5 text-xs font-semibold shadow-md transition-all flex items-center gap-1.5 border border-white/20 hover:scale-105"
+                    title={`Open Pravesh Launcher with ${user.email}`}
+                  >
+                    <span>⚡</span>
+                    <span>Pravesh</span>
+                  </a>
+                )}
                 <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/15 text-xs">
                   <UserIcon className="w-3.5 h-3.5 text-orange-400" />
                   <span className="font-medium max-w-[120px] truncate">{user?.full_name || user?.email}</span>

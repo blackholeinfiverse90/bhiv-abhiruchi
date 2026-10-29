@@ -33,8 +33,10 @@ export const ExportService = {
     }
 
     const headers = [
+      'Candidate ID',
       'Name',
       'Email',
+      'Institute Code',
       'Student ID',
       'Field of Study',
       'Phone',
@@ -52,8 +54,10 @@ export const ExportService = {
     const rows = students.map(s => {
       const resp = s.responses || {};
       return [
+        escapeCSV(s.candidate_id || s.student_id || ''),
         escapeCSV(s.name || resp.name || ''),
         escapeCSV(s.email || resp.email || ''),
+        escapeCSV(s.institute_code || 'MSSU'),
         escapeCSV(s.student_id || ''),
         escapeCSV(s.grade || resp.field_of_study || s.field_of_study || ''),
         escapeCSV(resp.phone || s.phone || ''),

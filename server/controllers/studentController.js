@@ -1,72 +1,182 @@
+import crypto from 'crypto';
 import Student from '../models/Student.js';
 import User from '../models/User.js';
 
 export const getAllStudents = async (req, res) => {
   try {
-    const students = await Student.find({});
-    const users = await User.find({ role: 'student' });
+    const { all = 'false' } = req.query;
 
-    const combinedMap = new Map();
+    // Filter to ONLY return students who have actually submitted the intake form
+    const query = all === 'true'
+      ? {}
+      : {
+          $or: [
+            { 'intake_data.field_of_study': { $exists: true } },
+            { 'intake_data.class_level': { $exists: true } },
+            { 'intake_data.phone': { $exists: true } },
+            { 'intake_data.availability_per_week_hours': { $exists: true } },
+            { 'intake_data.candidate_id': { $exists: true } }
+          ]
+        };
 
-    users.forEach(u => {
-      const emailKey = (u.email || '').toLowerCase();
-      combinedMap.set(emailKey, {
-        id: u._id,
-        user_id: u._id.toString(),
-        name: u.full_name,
-        email: u.email,
-        student_id: u._id.toString().substring(0, 8),
-        grade: u.field_of_study || 'STEM',
-        tier: 'Seed',
-        created_at: u.createdAt || new Date()
-      });
+    const students = await Student.find(query).sort({ updatedAt: -1, createdAt: -1 });
+
+    const result = students.map(s => ({
+      id: s._id,
+      user_id: s.user_id || s._id.toString(),
+      candidate_id: s.candidate_id || null,
+      institute_code: s.institute_code || null,
+      name: s.full_name || 'Student',
+      email: s.email || '',
+      student_id: s.candidate_id || null,
+      grade: s.field_of_study || s.intake_data?.field_of_study || 'STEM',
+      tier: 'Seed',
+      responses: s.intake_data || {},
+      created_at: s.createdAt || new Date()
+    }));
+
+    // Sort: Whoever has updated/selected their institute appears at the TOP
+    result.sort((a, b) => {
+      const aHas = Boolean(a.institute_code || a.candidate_id);
+      const bHas = Boolean(b.institute_code || b.candidate_id);
+      if (aHas && !bHas) return -1;
+      if (!aHas && bHas) return 1;
+      return new Date(b.created_at || 0) - new Date(a.created_at || 0);
     });
 
-    students.forEach(s => {
-      const emailKey = (s.email || '').toLowerCase();
-      const existing = combinedMap.get(emailKey) || {};
-      combinedMap.set(emailKey || s.user_id, {
-        ...existing,
-        id: s._id || existing.id,
-        user_id: s.user_id || existing.user_id,
-        name: s.full_name || existing.name,
-        email: s.email || existing.email,
-        student_id: s._id?.toString().substring(0, 8) || existing.student_id,
-        grade: s.field_of_study || existing.grade || 'STEM',
-        tier: existing.tier || 'Seed',
-        responses: s.intake_data || {},
-        created_at: s.createdAt || existing.created_at || new Date()
-      });
-    });
-
-    const result = Array.from(combinedMap.values());
     res.json({ success: true, count: result.length, data: result });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 };
 
+const APPROVED_INSTITUTES = ['MSSU', 'DYP-A', 'SIT-S', 'SIPS-S', 'VJTI'];
+
+const normalizeInstituteCode = (code) => {
+  if (!code) return null;
+  const upper = String(code).trim().toUpperCase();
+  if (upper === 'RTMSSU') return 'MSSU';
+  return APPROVED_INSTITUTES.includes(upper) ? upper : null;
+};
+
 export const saveStudentIntake = async (req, res) => {
   try {
-    const { user_id, email, full_name, field_of_study, selected_domains, intake_data } = req.body;
+    const { user_id, email, full_name, field_of_study, selected_domains, intake_data, institute_code, cohort_id } = req.body;
     
     if (!user_id) {
       return res.status(400).json({ success: false, error: 'user_id is required' });
     }
 
+    // Look for existing student record
+    let existingStudent = await Student.findOne({ user_id });
+
+    // Canonical Enrolment Rule: First time ONLY edit, then permanently locked
+    let normInstitute = null;
+    let candidate_id = existingStudent?.candidate_id;
+
+    if (existingStudent?.institute_code && existingStudent?.candidate_id) {
+      // Locked: Already enrolled with canonical institute and candidate ID
+      normInstitute = existingStudent.institute_code;
+      candidate_id = existingStudent.candidate_id;
+    } else {
+      // First time enrollment
+      const rawInst = institute_code || intake_data?.institute_code;
+      normInstitute = normalizeInstituteCode(rawInst);
+      if (!normInstitute) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'Please select one of the 5 approved institutes (MSSU, DYP-A, SIT-S, SIPS-S, VJTI) to complete enrollment.' 
+        });
+      }
+
+      // Mint canonical candidate_id for the first time
+      const count = await Student.countDocuments({ 
+        institute_code: normInstitute, 
+        candidate_id: { $exists: true, $ne: null } 
+      });
+      candidate_id = `BHIV-2026-${normInstitute}-${String(count + 1).padStart(4, '0')}`;
+    }
+
+    // Standard RFC 4122 UUIDv4 trace_id
+    const trace_id = crypto.randomUUID(); // Standard RFC 4122 UUIDv4
+
     const updatedStudent = await Student.findOneAndUpdate(
       { user_id },
       {
+        candidate_id,
+        institute_code: normInstitute,
+        cohort_id: cohort_id || 'COHORT-2026-OCT-A',
+        trace_id,
+        enrolment_status: 'VERIFIED',
+        lifecycle_status: 'ENROLLED_ACTIVE',
         email,
         full_name,
-        field_of_study,
+        field_of_study: field_of_study || 'stem',
         selected_domains: selected_domains || [],
-        intake_data: intake_data || {}
+        intake_data: {
+          ...intake_data,
+          institute_code: normInstitute,
+          candidate_id,
+          trace_id
+        }
       },
       { new: true, upsert: true }
     );
 
-    res.json({ success: true, data: updatedStudent });
+    // Form Sampada canonical handoff payload (compliant with Sampada AbhiruchiIntakeRequest schema)
+    const sampadaHandoffPayload = {
+      source_system: 'abhiruchi',
+      source_reference: updatedStudent._id.toString(),
+      canonical_candidate_id: candidate_id,
+      candidate_id,
+      abhiruchi_record_id: updatedStudent._id.toString(),
+      institute_code: normInstitute,
+      cohort_id: updatedStudent.cohort_id || 'COHORT-2026-OCT-A',
+      email,
+      trace_id,
+      lifecycle_status: updatedStudent.lifecycle_status || 'ENROLLED_ACTIVE',
+      schema_version: '1.0',
+      occurred_at: new Date().toISOString(),
+      candidate: {
+        name: full_name,
+        email,
+        email_verified: true,
+        phone: intake_data?.phone || null,
+        degree: intake_data?.degree || null,
+        intake_responses: intake_data || {}
+      }
+    };
+
+    // Auto-forward to Sampada webhook if configured
+    if (process.env.SAMPADA_API_URL) {
+      try {
+        const sampadaUrl = process.env.SAMPADA_API_URL;
+        const apiKey = process.env.SAMPADA_API_KEY || process.env.API_KEY_SECRET || '';
+        fetch(sampadaUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(apiKey ? { 'X-API-Key': apiKey, 'Authorization': `Bearer ${apiKey}` } : {})
+          },
+          body: JSON.stringify(sampadaHandoffPayload)
+        }).then(r => r.json()).then(res => {
+          console.log('✅ Sampada intake handoff accepted:', res.status || 'OK');
+        }).catch(err => {
+          console.warn('⚠️ Sampada intake webhook warning:', err.message);
+        });
+      } catch (e) {
+        console.warn('⚠️ Sampada webhook dispatch error:', e.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      candidate_id,
+      institute_code: normInstitute,
+      trace_id,
+      data: updatedStudent,
+      sampada_handoff: sampadaHandoffPayload
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -247,6 +357,105 @@ export const cleanupDummyStudents = async (req, res) => {
     }
 
     res.json({ success: true, message: `Successfully purged ${deletedCount} records` });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+
+export const exportStudentsData = async (req, res) => {
+  try {
+    const format = (req.query.format || 'json').toLowerCase();
+    const students = await Student.find({
+      $or: [
+        { 'intake_data.field_of_study': { $exists: true } },
+        { 'intake_data.class_level': { $exists: true } },
+        { 'intake_data.phone': { $exists: true } },
+        { 'intake_data.availability_per_week_hours': { $exists: true } },
+        { 'intake_data.candidate_id': { $exists: true } }
+      ]
+    }).sort({ createdAt: -1 });
+
+    if (format === 'csv') {
+      const headers = ['Candidate ID', 'Full Name', 'Email', 'Institute Code', 'Field of Study', 'Enrolment Status', 'Created At'];
+      const rows = students.map(s => [
+        `"${s.candidate_id || ''}"`,
+        `"${(s.full_name || '').replace(/"/g, '""')}"`,
+        `"${(s.email || '').replace(/"/g, '""')}"`,
+        `"${s.institute_code || 'MSSU'}"`,
+        `"${s.field_of_study || 'STEM'}"`,
+        `"${s.enrolment_status || 'VERIFIED'}"`,
+        `"${s.createdAt ? s.createdAt.toISOString() : ''}"`
+      ]);
+      const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(r => r.join(','))].join('\r\n');
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename="abhiruchi_candidates_export.csv"');
+      return res.send(csvContent);
+    }
+
+    // Default canonical JSON format for Sampada handoff
+    const payload = {
+      source_system: 'abhiruchi',
+      schema_version: '1.0.0',
+      total_records: students.length,
+      exported_at: new Date().toISOString(),
+      candidates: students.map(s => ({
+        candidate_id: s.candidate_id,
+        abhiruchi_record_id: s._id,
+        name: s.full_name,
+        email: s.email,
+        email_verified: true,
+        institute_code: s.institute_code || 'MSSU',
+        cohort_id: s.cohort_id || 'COHORT-2026-OCT-A',
+        field_of_study: s.field_of_study,
+        enrolment_status: s.enrolment_status,
+        lifecycle_status: s.lifecycle_status,
+        intake_responses: s.intake_data || {},
+        submitted_at: s.createdAt
+      }))
+    };
+
+    res.json(payload);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const backfillCandidateIds = async (req, res) => {
+  try {
+    const studentsWithoutId = await Student.find({
+      $or: [
+        { candidate_id: { $exists: false } },
+        { candidate_id: null },
+        { candidate_id: '' }
+      ]
+    }).sort({ createdAt: 1 });
+
+    let existingCount = await Student.countDocuments({ candidate_id: { $exists: true, $ne: null } });
+    let updated = 0;
+
+    for (const student of studentsWithoutId) {
+      existingCount++;
+      const inst = student.institute_code || 'MSSU';
+      const candidate_id = `BHIV-2026-${inst}-${String(existingCount).padStart(4, '0')}`;
+      const trace_id = crypto.randomUUID();
+
+      student.candidate_id = candidate_id;
+      student.institute_code = inst;
+      student.cohort_id = student.cohort_id || 'COHORT-2026-OCT-A';
+      student.trace_id = student.trace_id || trace_id;
+      student.enrolment_status = student.enrolment_status || 'VERIFIED';
+      student.lifecycle_status = student.lifecycle_status || 'ENROLLED_ACTIVE';
+      await student.save();
+      updated++;
+    }
+
+    res.json({
+      success: true,
+      message: `Successfully minted canonical candidate IDs for ${updated} students`,
+      updated,
+      total_with_id: existingCount
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

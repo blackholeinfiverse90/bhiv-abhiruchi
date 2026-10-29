@@ -174,13 +174,23 @@ export default function Admin() {
   const [studentDeleteConfirm, setStudentDeleteConfirm] = useState(null);
 
   const filtered = useMemo(() => {
+    let list = [...students];
     const q = search.trim().toLowerCase();
-    if (!q) return students;
-    return students.filter((s) =>
-      [s.name, s.grade, s.student_id, s.email]
-        .filter(Boolean)
-        .some((v) => String(v).toLowerCase().includes(q))
-    );
+    if (q) {
+      list = list.filter((s) =>
+        [s.name, s.grade, s.candidate_id, s.student_id, s.email, s.institute_code]
+          .filter(Boolean)
+          .some((v) => String(v).toLowerCase().includes(q))
+      );
+    }
+    // Sort: Whoever has updated/selected their institute appears at the TOP
+    return list.sort((a, b) => {
+      const aHasInst = Boolean(a.institute_code || a.candidate_id);
+      const bHasInst = Boolean(b.institute_code || b.candidate_id);
+      if (aHasInst && !bHasInst) return -1;
+      if (!aHasInst && bHasInst) return 1;
+      return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+    });
   }, [students, search]);
 
   async function fetchStudents() {
@@ -574,6 +584,47 @@ export default function Admin() {
                 Add Student
               </button>
               <button
+                onClick={() => {
+                  if (!students || students.length === 0) {
+                    toast.error("No student records available to export");
+                    return;
+                  }
+                  const payload = {
+                    source_system: "abhiruchi",
+                    schema_version: "1.0.0",
+                    total_records: students.length,
+                    exported_at: new Date().toISOString(),
+                    candidates: students.map((s) => ({
+                      source_system: "abhiruchi",
+                      source_reference: s.id || s._id || null,
+                      canonical_candidate_id: s.candidate_id || null,
+                      candidate_id: s.candidate_id || s.student_id || null,
+                      name: s.name,
+                      email: s.email,
+                      institute_code: s.institute_code || null,
+                      cohort_id: s.cohort_id || "COHORT-2026-OCT-A",
+                      grade: s.grade,
+                      tier: s.tier,
+                      responses: s.responses || {},
+                      submitted_at: s.created_at
+                    }))
+                  };
+                  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+                  const url = URL.createObjectURL(blob);
+                  const link = document.createElement("a");
+                  link.href = url;
+                  link.download = `abhiruchi_sampada_handoff_${new Date().toISOString().slice(0, 10)}.json`;
+                  link.click();
+                  URL.revokeObjectURL(url);
+                  toast.success(`Exported ${students.length} records to canonical Sampada JSON`);
+                }}
+                className="btn bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/30 flex items-center gap-1.5"
+                title="Export canonical payload for Sampada intake"
+              >
+                <Sparkles className="w-4 h-4" />
+                Sampada JSON
+              </button>
+              <button
                 onClick={handleExportStudentsCSV}
                 className="btn bg-green-500/20 text-green-300 hover:bg-green-500/30 border border-green-500/30 flex items-center gap-1.5"
                 title="Export student intake submissions to CSV"
@@ -757,11 +808,12 @@ export default function Admin() {
                 <thead className="bg-white/10 text-xs uppercase tracking-wider text-white/70 border-b border-white/10">
                   <tr>
                     <th className="px-4 py-3 font-semibold">Student</th>
-                    <th className="px-4 py-3 font-semibold">Actions</th>
+                    <th className="px-3 py-3 font-semibold">Candidate ID</th>
+                    <th className="px-3 py-3 font-semibold">Institute</th>
                     <th className="px-3 py-3 font-semibold">Grade</th>
-                    <th className="hidden sm:table-cell px-3 py-3 font-semibold">Student ID</th>
                     <th className="px-3 py-3 font-semibold">Tier</th>
                     <th className="hidden md:table-cell px-3 py-3 font-semibold">Joined</th>
+                    <th className="px-4 py-3 font-semibold text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/10">
@@ -774,29 +826,30 @@ export default function Admin() {
                         <div className="font-medium text-white">{s.name || 'Unnamed Student'}</div>
                         <div className="text-xs text-white/60 truncate max-w-[180px] sm:max-w-xs">{s.email || '—'}</div>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => openEdit(s)}
-                            className="btn px-2.5 py-1 text-xs"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => onDelete(s)}
-                            className="btn px-2.5 py-1 text-xs text-red-300 hover:text-white bg-red-500/20 hover:bg-red-600 border border-red-500/40 flex items-center gap-1 font-medium transition-all shadow-sm"
-                            title={`Delete student account for ${s.name}`}
-                          >
-                            <Trash2 className="w-3.5 h-3.5 text-red-400" />
-                            Delete
-                          </button>
-                        </div>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        {s.candidate_id ? (
+                          <span className="font-mono text-xs px-2.5 py-1 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-semibold shadow-sm">
+                            {s.candidate_id}
+                          </span>
+                        ) : (
+                          <span className="font-mono text-xs px-2 py-0.5 rounded bg-amber-500/10 text-amber-300/70 border border-amber-500/20">
+                            {s.student_id ? `${s.student_id} (Legacy)` : 'Pending'}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        {s.institute_code ? (
+                          <span className="text-xs px-2.5 py-1 rounded bg-neutral-800 text-white border border-white/20 font-medium">
+                            {s.institute_code}
+                          </span>
+                        ) : (
+                          <span className="text-xs px-2 py-0.5 rounded bg-amber-500/10 text-amber-300/70 border border-amber-500/20 italic">
+                            Pending Selection
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-3 text-white/80 whitespace-nowrap">
                         {s.grade || '—'}
-                      </td>
-                      <td className="hidden sm:table-cell px-3 py-3 text-white/70 font-mono text-xs whitespace-nowrap">
-                        {s.student_id || '—'}
                       </td>
                       <td className="px-3 py-3 whitespace-nowrap">
                         {s.tier ? (
@@ -821,6 +874,24 @@ export default function Admin() {
                         {s.created_at
                           ? new Date(s.created_at).toLocaleDateString()
                           : "—"}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => openEdit(s)}
+                            className="btn px-2.5 py-1 text-xs"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => onDelete(s)}
+                            className="btn px-2.5 py-1 text-xs text-red-300 hover:text-white bg-red-500/20 hover:bg-red-600 border border-red-500/40 flex items-center gap-1 font-medium transition-all shadow-sm"
+                            title={`Delete student account for ${s.name}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                            Delete
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}

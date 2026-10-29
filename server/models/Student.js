@@ -3,6 +3,16 @@ import mongoose from 'mongoose';
 const studentSchema = new mongoose.Schema(
   {
     user_id: { type: String, required: true, unique: true },
+    candidate_id: { type: String, unique: true, sparse: true },
+    institute_code: {
+      type: String,
+      enum: ['MSSU', 'DYP-A', 'SIT-S', 'SIPS-S', 'VJTI', null],
+      default: null
+    },
+    cohort_id: { type: String, default: 'COHORT-2026-OCT-A' },
+    trace_id: { type: String },
+    enrolment_status: { type: String, default: 'PENDING' },
+    lifecycle_status: { type: String, default: 'ENROLLED_ACTIVE' },
     email: { type: String },
     full_name: { type: String },
     field_of_study: { type: String, default: 'stem' },

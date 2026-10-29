@@ -270,6 +270,21 @@ export default function Dashboard() {
                 'Gurukul Learning Analytics Hub'
               }
             </h1>
+            {user?.email && (
+              <div className="mb-4 flex justify-center">
+                <a
+                  href={`${import.meta.env.VITE_PRAVESH_URL || "http://localhost:5174"}/login?email=${encodeURIComponent(user.email)}&auto=true`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 px-5 py-2 rounded-full bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:opacity-95 text-white text-xs sm:text-sm font-semibold shadow-xl shadow-purple-500/25 border border-white/20 transition-all hover:scale-105"
+                  title={`Open Pravesh Launcher with ${user.email}`}
+                >
+                  <span>⚡</span>
+                  <span>Open Pravesh Launcher ({user.email})</span>
+                  <span className="text-xs opacity-75">➜</span>
+                </a>
+              </div>
+            )}
             <p className="text-white/70 text-lg max-w-4xl mx-auto leading-relaxed">
               {loading ? 'Loading your comprehensive learning analytics...' : 
                dashboardData.recentAttempts.length > 0 ? 
