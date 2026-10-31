@@ -218,9 +218,9 @@ export default function Layout() {
               </button>
             ) : isAuthenticated ? (
               <div className="flex items-center gap-2">
-                {user?.email && (
+                {user?.email && (isAdmin || user?.candidate_id || user?.institute_code || (typeof window !== "undefined" && localStorage.getItem("gurukul_intake_" + (user?.id || user?._id)))) ? (
                   <a
-                    href={`${import.meta.env.VITE_PRAVESH_URL || "http://localhost:5174"}/login?email=${encodeURIComponent(user.email)}&auto=true`}
+                    href={`${import.meta.env.VITE_PRAVESH_URL || "https://pravesh.blackholeinfiverse.com"}/login?email=${encodeURIComponent(user.email)}&auto=true`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="rounded-full bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:opacity-90 text-white px-3.5 py-1.5 text-xs font-semibold shadow-md transition-all flex items-center gap-1.5 border border-white/20 hover:scale-105"
@@ -229,7 +229,16 @@ export default function Layout() {
                     <span>⚡</span>
                     <span>Pravesh</span>
                   </a>
-                )}
+                ) : user?.email && !isAdmin ? (
+                  <Link
+                    to="/intake"
+                    className="rounded-full bg-orange-500/20 hover:bg-orange-500/30 text-orange-200 border border-orange-400/30 px-3 py-1.5 text-xs font-semibold shadow-md transition-all flex items-center gap-1.5"
+                    title="Complete Intake Form to Unlock Pravesh Launcher"
+                  >
+                    <span>📝</span>
+                    <span>Intake</span>
+                  </Link>
+                ) : null}
                 <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/15 text-xs">
                   <UserIcon className="w-3.5 h-3.5 text-orange-400" />
                   <span className="font-medium max-w-[120px] truncate">{user?.full_name || user?.email}</span>

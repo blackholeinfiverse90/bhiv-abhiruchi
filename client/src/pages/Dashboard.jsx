@@ -22,15 +22,25 @@ export default function Dashboard() {
     streaks: null,
     achievements: [],
     recommendations: []
-  })
+  });
+  const [hasCompletedIntake, setHasCompletedIntake] = useState(false);
 
   useEffect(() => {
     if (user) {
-      loadDashboardData()
+      const userId = user.id || user._id;
+      const hasLocalIntake = Boolean(
+        user.candidate_id ||
+        user.institute_code ||
+        user.has_completed_intake ||
+        (user.intake_data && Object.keys(user.intake_data).length > 0) ||
+        localStorage.getItem('gurukul_intake_' + userId)
+      );
+      if (hasLocalIntake) setHasCompletedIntake(true);
+      loadDashboardData();
     } else {
-      setLoading(false)
+      setLoading(false);
     }
-  }, [user])
+  }, [user]);
 
   const loadDashboardData = async () => {
     try {
@@ -44,6 +54,24 @@ export default function Dashboard() {
       try {
         const res = await ApiClient.get(`/students/profile/${userId}`)
         const studentProfile = res?.data
+        const profileComplete = Boolean(
+          studentProfile &&
+          (studentProfile.candidate_id ||
+           studentProfile.institute_code ||
+           (studentProfile.intake_data && Object.keys(studentProfile.intake_data).length > 0))
+        );
+        if (profileComplete) {
+          setHasCompletedIntake(true);
+        } else if (user?.email) {
+          try {
+            const listRes = await ApiClient.get('/students');
+            const studentsList = Array.isArray(listRes?.data) ? listRes.data : (listRes?.students || []);
+            const match = studentsList.find((s) => (s.email || '').trim().toLowerCase() === user.email.trim().toLowerCase());
+            if (match && (match.candidate_id || match.student_id)) {
+              setHasCompletedIntake(true);
+            }
+          } catch (_) {}
+        }
         if (studentProfile && Array.isArray(studentProfile.assessment_history) && studentProfile.assessment_history.length > 0) {
           attemptsData = studentProfile.assessment_history.map((ah, idx) => ({
             id: ah._id || `att_${idx}_${Date.now()}`,
@@ -270,19 +298,31 @@ export default function Dashboard() {
                 'Gurukul Learning Analytics Hub'
               }
             </h1>
-            {user?.email && (
+            {user?.email && hasCompletedIntake && (
               <div className="mb-4 flex justify-center">
                 <a
-                  href={`${import.meta.env.VITE_PRAVESH_URL || "http://localhost:5174"}/login?email=${encodeURIComponent(user.email)}&auto=true`}
+                  href={`${import.meta.env.VITE_PRAVESH_URL || "https://pravesh.blackholeinfiverse.com"}/login?email=${encodeURIComponent(user.email)}&auto=true`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 px-5 py-2 rounded-full bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:opacity-95 text-white text-xs sm:text-sm font-semibold shadow-xl shadow-purple-500/25 border border-white/20 transition-all hover:scale-105"
+                  className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:opacity-95 text-white text-xs sm:text-sm font-semibold shadow-xl shadow-purple-500/25 border border-white/20 transition-all hover:scale-105"
                   title={`Open Pravesh Launcher with ${user.email}`}
                 >
                   <span>⚡</span>
                   <span>Open Pravesh Launcher ({user.email})</span>
                   <span className="text-xs opacity-75">➜</span>
                 </a>
+              </div>
+            )}
+            {user?.email && !hasCompletedIntake && !loading && (
+              <div className="mb-4 flex justify-center">
+                <Link
+                  to="/intake"
+                  className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-gradient-to-r from-amber-500/20 via-orange-500/20 to-rose-500/20 border border-orange-400/40 text-orange-200 hover:text-white hover:bg-orange-500/30 text-xs sm:text-sm font-semibold transition-all hover:scale-105 shadow-lg shadow-orange-500/10"
+                >
+                  <span>📝</span>
+                  <span>Complete Intake Form to Unlock Pravesh Launcher</span>
+                  <span className="text-xs opacity-75">➜</span>
+                </Link>
               </div>
             )}
             <p className="text-white/70 text-lg max-w-4xl mx-auto leading-relaxed">
