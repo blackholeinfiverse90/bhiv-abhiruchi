@@ -5,6 +5,10 @@
 const API_BASE_URL = (typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_API_BASE_URL : (typeof process !== 'undefined' ? process.env?.VITE_API_BASE_URL : '')) || 'http://localhost:5000/api';
 
 class ApiClient {
+  static getBaseUrl() {
+    return API_BASE_URL;
+  }
+
   static async request(endpoint, options = {}) {
     const url = `${API_BASE_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
     
@@ -44,7 +48,7 @@ class ApiClient {
   }
 
   static get(endpoint, headers = {}) {
-    return this.request(endpoint, { method: 'GET', headers });
+    return this.request(endpoint, { method: 'GET', cache: 'no-store', headers });
   }
 
   static post(endpoint, body, headers = {}) {

@@ -79,7 +79,7 @@ const QuestionCategoryManager = () => {
   const loadCategories = async () => {
     setLoading(true);
     try {
-      const categoryList = await DynamicQuestionCategoryService.loadCategories();
+      const categoryList = await DynamicQuestionCategoryService.getCategoriesWithStats(true);
       setCategories(categoryList);
     } catch (error) {
       console.error('Error loading question categories:', error);
@@ -394,6 +394,9 @@ const QuestionCategoryManager = () => {
                         <h3 className="font-medium text-white">{category.name}</h3>
                         <span className="text-xs px-2 py-1 bg-white/10 rounded text-white/70">
                           {category.category_id}
+                        </span>
+                        <span className="text-xs px-2 py-1 bg-orange-500/20 text-orange-300 rounded">
+                          {category.question_count ?? 0} questions
                         </span>
                         {category.is_system && (
                           <span className="text-xs px-2 py-1 bg-blue-500/20 text-blue-400 rounded">

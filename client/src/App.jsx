@@ -61,7 +61,14 @@ export default function App() {
               </ProtectedRoute>
             }
           />
-          <Route path="admin" element={<Admin />} />
+          <Route
+            path="admin"
+            element={
+              <ProtectedRoute requireAdmin>
+                <Admin />
+              </ProtectedRoute>
+            }
+          />
           {/* Catch-all route for 404 pages */}
           <Route path="*" element={<NotFound />} />
         </Route>

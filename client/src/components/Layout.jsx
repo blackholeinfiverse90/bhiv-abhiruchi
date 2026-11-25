@@ -77,8 +77,8 @@ export default function Layout() {
   return (
     <div className="min-h-screen text-white">
       {/* Floating Pill Navbar */}
-      <header className="sticky top-3 sm:top-4 z-50 max-w-6xl mx-auto px-3 sm:px-4">
-        <div className="rounded-full border border-white/20 bg-white/10 backdrop-blur-md px-4 sm:px-6 py-2 sm:py-2.5 shadow-2xl flex items-center justify-between transition-all duration-300 hover:border-white/30">
+      <header className="sticky top-3 sm:top-4 z-50 max-w-7xl mx-auto px-3 sm:px-6">
+        <div className="rounded-full border border-white/15 bg-slate-950/80 backdrop-blur-xl px-4 sm:px-6 py-2 sm:py-2.5 shadow-2xl shadow-black/40 flex items-center justify-between transition-all duration-300 hover:border-white/25">
           
           {/* Circular Logo & Brand */}
           <Link
@@ -367,14 +367,30 @@ export default function Layout() {
                 >
                   {t("nav.assignment")}
                 </NavLink>
+                {isAdmin && (
+                  <NavLink
+                    to="/admin"
+                    onClick={(e) => {
+                      setIsMobileMenuOpen(false);
+                      if (!requestNavigation("/admin")) e.preventDefault();
+                    }}
+                    className={({ isActive }) =>
+                      `block w-full rounded-xl px-4 py-2.5 text-xs font-semibold ${
+                        isActive ? "bg-orange-500 text-white" : "bg-orange-500/20 text-orange-300 border border-orange-500/30"
+                      }`
+                    }
+                  >
+                    Admin Panel
+                  </NavLink>
+                )}
                 <button
                   onClick={() => {
                     setIsMobileMenuOpen(false);
-                    handleUserLogout();
+                    isAdmin ? handleAdminLogout() : handleUserLogout();
                   }}
                   className="w-full text-left rounded-xl px-4 py-2.5 text-xs font-semibold bg-red-500/20 text-red-300 border border-red-500/30"
                 >
-                  Sign Out
+                  {isAdmin ? t("nav.logoutAdmin") : "Sign Out"}
                 </button>
               </div>
             ) : (
@@ -392,7 +408,7 @@ export default function Layout() {
           </div>
         )}
       </header>
-      <main key={`lang-${lang}`} className="mx-auto max-w-6xl px-4 py-8">
+      <main key={`lang-${lang}`} className="mx-auto max-w-7xl px-4 sm:px-6 py-6 sm:py-8">
         <Outlet />
       </main>
     </div>

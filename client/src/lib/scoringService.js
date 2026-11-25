@@ -67,17 +67,10 @@ class ScoringService {
         categoryScores[category].count += 1;
 
         totalScore += evaluation.total_score;
-
-        console.log(`📊 Updated totals - Question score: ${evaluation.total_score}, Running total: ${totalScore}`);
-
-        // Add small delay to avoid rate limiting
-        console.log(`⏳ Waiting 2 seconds before next evaluation...`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
       } catch (error) {
         console.error(`❌ Failed to evaluate question ${i + 1}:`, error);
         // Fallback: continue evaluation with a minimal record for this question
-        const isCorrect = userAnswer === question.correct_answer;
+        const isCorrect = this.isAnswerCorrect(userAnswer, question.correct_answer, question.options);
         const fallbackEvaluation = {
           question_id: question.id,
           question_category: question.category || 'General',
@@ -145,14 +138,37 @@ class ScoringService {
     };
   }
 
+  /**
+   * Robust answer matcher handling whitespace, casing, and "A) " / "B." option prefixes
+   */
+  isAnswerCorrect(userAnswer, correctAnswer, options = []) {
+    if (!userAnswer || !correctAnswer) return false;
+    const u = String(userAnswer).trim();
+    const c = String(correctAnswer).trim();
+    if (u === c || u.toLowerCase() === c.toLowerCase()) return true;
+
+    const stripPrefix = (s) => s.replace(/^[A-Da-d][\)\.\:\-\s]+/, '').trim().toLowerCase();
+    const uBody = stripPrefix(u);
+    const cBody = stripPrefix(c);
+    if (uBody && cBody && uBody === cBody) return true;
+
+    // Handle single-letter correct_answer like "A" or "B" against options list
+    const letterMatch = c.match(/^([A-Da-d])[\.\)]?$/);
+    if (letterMatch && Array.isArray(options) && options.length > 0) {
+      const idx = letterMatch[1].toUpperCase().charCodeAt(0) - 65;
+      const targetOpt = options[idx];
+      if (targetOpt && (u.toLowerCase() === String(targetOpt).trim().toLowerCase() || uBody === stripPrefix(String(targetOpt)))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   async evaluateResponse(question, userAnswer, userExplanation) {
     console.log(`🔍 ScoringService: Starting evaluation for question ${question.id}`);
 
     try {
-      // Direct evaluation using predefined correct answers (no AI needed)
-      console.log(`✅ Evaluating using hardcoded correct answer...`);
-      
-      const isCorrect = userAnswer === question.correct_answer;
+      const isCorrect = this.isAnswerCorrect(userAnswer, question.correct_answer, question.options);
       const hasExplanation = userExplanation && userExplanation.trim().length > 0;
       const explanationLength = userExplanation ? userExplanation.trim().length : 0;
       
@@ -264,16 +280,12 @@ class ScoringService {
 
       console.log(`✅ Final evaluation result:`, evaluationResult);
       
-      // Update question usage statistics
-      try {
-        await this.fieldBasedQuestionService.updateQuestionStats(
-          question.id, 
-          isCorrect, 
-          180 // default time, could be passed as parameter
-        );
-      } catch (statsError) {
-        console.warn('Could not update question statistics:', statsError);
-      }
+      // Update question usage statistics non-blocking so evaluation never stalls
+      this.fieldBasedQuestionService
+        .updateQuestionStats(question.id, isCorrect, 180)
+        .catch((statsError) => {
+          console.warn('Could not update question statistics:', statsError);
+        });
       
       return evaluationResult;
 

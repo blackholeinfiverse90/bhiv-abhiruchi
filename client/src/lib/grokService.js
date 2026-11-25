@@ -250,16 +250,21 @@ class GrokService {
     throw new Error('Failed to parse valid JSON questions array from model output');
   }
 
-  async generateQuestions(category, difficulty, count = 5) {
+  async generateQuestions(category, difficulty, count = 5, context = {}) {
     // 1. Try server-side Uniguru / Mitra & Groq engine
     try {
       const res = await ApiClient.post('/ai/generate-questions', {
-        field_of_study: category,
+        field_of_study: context.field_of_study || category,
+        category: context.category || category,
         difficulty,
-        count
+        count,
+        education_level: context.education_level || '',
+        topics: context.topics || [],
+        exclude_questions: context.exclude_questions || [],
+        target_domains: context.target_domains || []
       });
       if (res && res.success && Array.isArray(res.data) && res.data.length > 0) {
-        console.log(`✅ Loaded ${res.data.length} questions from backend AI engine for ${category}`);
+        console.log(`✅ Loaded ${res.data.length} questions from backend AI engine [${res.provider_used}/${res.model_used}] for ${context.field_of_study || category}`);
         return res.data;
       }
     } catch (backendErr) {
@@ -315,11 +320,11 @@ class GrokService {
     }
   }
 
-  async generateUniqueQuestions(category, difficulty, count, usedQuestionTexts, maxRetries = 2) {
+  async generateUniqueQuestions(category, difficulty, count, usedQuestionTexts, maxRetries = 2, context = {}) {
     const uniqueQuestions = [];
     let attempts = 0;
 
-    console.log(`🎯 Generating ${count} unique ${category} ${difficulty} questions...`);
+    console.log(`🎯 Generating ${count} unique ${category} ${difficulty} questions (Field: ${context.field_of_study || 'auto'})...`);
 
     while (uniqueQuestions.length < count && attempts < maxRetries) {
       attempts++;
@@ -328,7 +333,11 @@ class GrokService {
       try {
         // For rate limiting, generate exactly what we need rather than extra
         const requestCount = count;
-        const generatedQuestions = await this.generateQuestions(category, difficulty, requestCount);
+        const generatedQuestions = await this.generateQuestions(category, difficulty, requestCount, {
+          ...context,
+          category: context.category || category,
+          exclude_questions: Array.from(usedQuestionTexts || []).slice(0, 15)
+        });
 
         // Filter out duplicates
         for (const question of generatedQuestions) {
@@ -596,6 +605,21 @@ class GrokService {
   }
 
   async evaluateResponse(question, userAnswer, userExplanation) {
+    // 1. Try server-side Uniguru / Mitra & Groq evaluator first
+    try {
+      const res = await ApiClient.post('/ai/evaluate-response', {
+        question_text: question.question_text,
+        user_answer: userAnswer,
+        user_explanation: userExplanation || '',
+        correct_answer: question.correct_answer
+      });
+      if (res && res.success && res.data) {
+        return res.data;
+      }
+    } catch (backendErr) {
+      console.warn('Backend /ai/evaluate-response failed, trying fallback:', backendErr.message);
+    }
+
     const prompt = GROK_PROMPTS.EVALUATE_RESPONSE
       .replace('{question}', question.question_text)
       .replace('{answer}', userAnswer)
@@ -667,7 +691,7 @@ class GrokService {
 
   async generateOverallFeedback(evaluatedResponses, categoryScores, overallPercentage, userContext = null) {
     try {
-      console.log('🎯 Generating overall feedback with Grok AI...');
+      console.log('🎯 Generating overall feedback with Uniguru/Mitra backend...');
       
       const totalQuestions = evaluatedResponses.length;
       const correctAnswers = evaluatedResponses.filter(r => r.is_correct).length;
@@ -697,6 +721,24 @@ class GrokService {
       const categories = Object.keys(categoryScores).join(', ');
       
       const studentName = userContext?.name || 'Student';
+
+      // 1. Try server-side Uniguru / Mitra & Groq feedback generator first
+      try {
+        const res = await ApiClient.post('/ai/feedback', {
+          studentName,
+          score: Math.round(totalScore),
+          totalQuestions: maxScore,
+          domains: Object.keys(categoryScores),
+          strengths: strongCategories.split(', '),
+          weakAreas: weakCategories.split(', '),
+          field_of_study: userContext?.field_of_study || 'STEM'
+        });
+        if (res && res.success && res.feedback) {
+          return res.feedback;
+        }
+      } catch (backendErr) {
+        console.warn('Backend /ai/feedback failed, falling back:', backendErr.message);
+      }
       
       const prompt = GROK_PROMPTS.GENERATE_OVERALL_FEEDBACK
         .replace('{student_name}', studentName)

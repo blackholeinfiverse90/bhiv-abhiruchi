@@ -26,12 +26,19 @@ export const getAllStudents = async (req, res) => {
       user_id: s.user_id || s._id.toString(),
       candidate_id: s.candidate_id || null,
       institute_code: s.institute_code || null,
+      cohort_id: s.cohort_id || 'COHORT-2026-OCT-A',
+      trace_id: s.trace_id || null,
+      enrolment_status: s.enrolment_status || 'PENDING',
+      lifecycle_status: s.lifecycle_status || 'ENROLLED_ACTIVE',
       name: s.full_name || 'Student',
       email: s.email || '',
       student_id: s.candidate_id || null,
       grade: s.field_of_study || s.intake_data?.field_of_study || 'STEM',
+      field_of_study: s.field_of_study || s.intake_data?.field_of_study || 'STEM',
+      selected_domains: s.selected_domains || [],
       tier: 'Seed',
       responses: s.intake_data || {},
+      assessment_history: s.assessment_history || [],
       created_at: s.createdAt || new Date()
     }));
 
@@ -313,104 +320,297 @@ export const deleteStudent = async (req, res) => {
   }
 };
 
-export const cleanupDummyStudents = async (req, res) => {
+const DUMMY_ACCOUNT_REGEX = /(test|dummy|example\.com|sample|fake|temp|demo\.com|@probe\.local|@pentest\.local|student@gurukul\.com)/i;
+const PROTECTED_ADMIN_EMAIL = 'admin@gurukul.com';
+
+const findDummyRecords = async () => {
+  const [users, students] = await Promise.all([
+    User.find({ email: { $ne: PROTECTED_ADMIN_EMAIL } }).select('-password'),
+    Student.find({ email: { $ne: PROTECTED_ADMIN_EMAIL } })
+  ]);
+
+  const candidatesMap = new Map();
+
+  for (const u of users) {
+    const email = (u.email || '').toLowerCase();
+    const name = u.full_name || '';
+    if (DUMMY_ACCOUNT_REGEX.test(email) || DUMMY_ACCOUNT_REGEX.test(name)) {
+      const key = email || `user_${u._id}`;
+      candidatesMap.set(key, {
+        key,
+        userId: u._id.toString(),
+        studentId: null,
+        name: name || 'User',
+        email: u.email || '',
+        role: u.role || 'student',
+        candidate_id: null,
+        hasAssessment: Array.isArray(u.assessment_history) && u.assessment_history.length > 0,
+        reason: DUMMY_ACCOUNT_REGEX.test(email) ? 'Test/probe email pattern' : 'Test/dummy name pattern',
+        created_at: u.createdAt
+      });
+    }
+  }
+
+  for (const s of students) {
+    const email = (s.email || '').toLowerCase();
+    const name = s.full_name || '';
+    const isPatternMatch = DUMMY_ACCOUNT_REGEX.test(email) || DUMMY_ACCOUNT_REGEX.test(name);
+    const isOrphanEmpty = !email && (!name || name === 'Student') && !s.candidate_id && (!s.assessment_history || s.assessment_history.length === 0);
+
+    if (isPatternMatch || isOrphanEmpty) {
+      const key = email || `student_${s._id}`;
+      const existing = candidatesMap.get(key);
+      if (existing) {
+        existing.studentId = s._id.toString();
+        existing.candidate_id = s.candidate_id || existing.candidate_id;
+        existing.hasAssessment = existing.hasAssessment || (Array.isArray(s.assessment_history) && s.assessment_history.length > 0);
+      } else {
+        candidatesMap.set(key, {
+          key,
+          userId: s.user_id || null,
+          studentId: s._id.toString(),
+          name: name || 'Student',
+          email: s.email || '',
+          role: 'student',
+          candidate_id: s.candidate_id || null,
+          hasAssessment: Array.isArray(s.assessment_history) && s.assessment_history.length > 0,
+          reason: isOrphanEmpty ? 'Empty placeholder record (no email/intake)' : 'Test/probe pattern in student record',
+          created_at: s.createdAt
+        });
+      }
+    }
+  }
+
+  return Array.from(candidatesMap.values());
+};
+
+export const getDummyCandidates = async (req, res) => {
   try {
-    const { userIds, emails, deleteTestKeywords = false } = req.body;
-    let deletedCount = 0;
-
-    // Specific user IDs or emails
-    if (Array.isArray(userIds) && userIds.length > 0) {
-      const sRes = await Student.deleteMany({ user_id: { $in: userIds } });
-      const uRes = await User.deleteMany({ _id: { $in: userIds } });
-      deletedCount += (sRes.deletedCount + uRes.deletedCount);
-    }
-
-    if (Array.isArray(emails) && emails.length > 0) {
-      const lowerEmails = emails.map(e => e.toLowerCase());
-      const sRes = await Student.deleteMany({ email: { $in: lowerEmails } });
-      const uRes = await User.deleteMany({ email: { $in: lowerEmails } });
-      deletedCount += (sRes.deletedCount + uRes.deletedCount);
-    }
-
-    // Keyword purge: test, dummy, etc.
-    if (deleteTestKeywords) {
-      const testRegex = /(test|dummy|example|sample|student@gurukul\.com)/i;
-      const testUsers = await User.find({
-        role: { $ne: 'admin' }, // protect admin
-        $or: [
-          { email: testRegex },
-          { full_name: testRegex }
-        ]
-      });
-
-      const idsToDelete = testUsers.map(u => u._id);
-      const emailsToDelete = testUsers.map(u => u.email.toLowerCase());
-
-      const sRes = await Student.deleteMany({
-        $or: [
-          { user_id: { $in: idsToDelete.map(id => id.toString()) } },
-          { email: { $in: emailsToDelete } }
-        ]
-      });
-      const uRes = await User.deleteMany({ _id: { $in: idsToDelete } });
-      deletedCount += (sRes.deletedCount + uRes.deletedCount);
-    }
-
-    res.json({ success: true, message: `Successfully purged ${deletedCount} records` });
+    const candidates = await findDummyRecords();
+    res.json({ success: true, count: candidates.length, data: candidates });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 };
 
+export const cleanupDummyStudents = async (req, res) => {
+  try {
+    const { studentIds = [], userIds = [], emails = [], deleteTestKeywords = false, dryRun = false } = req.body;
+
+    if (dryRun) {
+      const candidates = await findDummyRecords();
+      return res.json({ success: true, dryRun: true, count: candidates.length, data: candidates });
+    }
+
+    let deletedStudents = 0;
+    let deletedUsers = 0;
+
+    // 1. Delete by explicit Student._id list
+    if (Array.isArray(studentIds) && studentIds.length > 0) {
+      const validStudentObjIds = studentIds.filter(id => /^[0-9a-fA-F]{24}$/.test(String(id)));
+      if (validStudentObjIds.length > 0) {
+        const matchedStudents = await Student.find({
+          _id: { $in: validStudentObjIds },
+          email: { $ne: PROTECTED_ADMIN_EMAIL }
+        });
+        const linkedUserIds = matchedStudents
+          .map(s => s.user_id)
+          .filter(id => id && /^[0-9a-fA-F]{24}$/.test(String(id)));
+        const linkedEmails = matchedStudents
+          .map(s => (s.email || '').toLowerCase())
+          .filter(e => e && e !== PROTECTED_ADMIN_EMAIL);
+
+        const sRes = await Student.deleteMany({ _id: { $in: validStudentObjIds }, email: { $ne: PROTECTED_ADMIN_EMAIL } });
+        deletedStudents += sRes.deletedCount;
+
+        if (linkedUserIds.length > 0 || linkedEmails.length > 0) {
+          const uRes = await User.deleteMany({
+            email: { $ne: PROTECTED_ADMIN_EMAIL },
+            $or: [
+              ...(linkedUserIds.length > 0 ? [{ _id: { $in: linkedUserIds } }] : []),
+              ...(linkedEmails.length > 0 ? [{ email: { $in: linkedEmails } }] : [])
+            ]
+          });
+          deletedUsers += uRes.deletedCount;
+        }
+      }
+    }
+
+    // 2. Delete by userIds (supports both ObjectId and string user_id)
+    if (Array.isArray(userIds) && userIds.length > 0) {
+      const strIds = userIds.map(String).filter(Boolean);
+      const objIds = strIds.filter(id => /^[0-9a-fA-F]{24}$/.test(id));
+      const sRes = await Student.deleteMany({
+        email: { $ne: PROTECTED_ADMIN_EMAIL },
+        $or: [
+          { user_id: { $in: strIds } },
+          ...(objIds.length > 0 ? [{ _id: { $in: objIds } }] : [])
+        ]
+      });
+      deletedStudents += sRes.deletedCount;
+
+      if (objIds.length > 0) {
+        const uRes = await User.deleteMany({ _id: { $in: objIds }, email: { $ne: PROTECTED_ADMIN_EMAIL } });
+        deletedUsers += uRes.deletedCount;
+      }
+    }
+
+    // 3. Delete by emails
+    if (Array.isArray(emails) && emails.length > 0) {
+      const lowerEmails = emails
+        .map(e => String(e).toLowerCase().trim())
+        .filter(e => e && e !== PROTECTED_ADMIN_EMAIL);
+      if (lowerEmails.length > 0) {
+        const sRes = await Student.deleteMany({ email: { $in: lowerEmails } });
+        const uRes = await User.deleteMany({ email: { $in: lowerEmails } });
+        deletedStudents += sRes.deletedCount;
+        deletedUsers += uRes.deletedCount;
+      }
+    }
+
+    // 4. Keyword purge across both User and Student collections
+    if (deleteTestKeywords) {
+      const candidates = await findDummyRecords();
+      const sIds = candidates.map(c => c.studentId).filter(id => id && /^[0-9a-fA-F]{24}$/.test(id));
+      const uIds = candidates.map(c => c.userId).filter(id => id && /^[0-9a-fA-F]{24}$/.test(id));
+      const cEmails = candidates.map(c => (c.email || '').toLowerCase()).filter(e => e && e !== PROTECTED_ADMIN_EMAIL);
+
+      if (sIds.length > 0 || cEmails.length > 0) {
+        const sRes = await Student.deleteMany({
+          email: { $ne: PROTECTED_ADMIN_EMAIL },
+          $or: [
+            ...(sIds.length > 0 ? [{ _id: { $in: sIds } }] : []),
+            ...(cEmails.length > 0 ? [{ email: { $in: cEmails } }] : [])
+          ]
+        });
+        deletedStudents += sRes.deletedCount;
+      }
+      if (uIds.length > 0 || cEmails.length > 0) {
+        const uRes = await User.deleteMany({
+          email: { $ne: PROTECTED_ADMIN_EMAIL },
+          $or: [
+            ...(uIds.length > 0 ? [{ _id: { $in: uIds } }] : []),
+            ...(cEmails.length > 0 ? [{ email: { $in: cEmails } }] : [])
+          ]
+        });
+        deletedUsers += uRes.deletedCount;
+      }
+    }
+
+    const totalDeleted = deletedStudents + deletedUsers;
+    res.json({
+      success: true,
+      deletedStudents,
+      deletedUsers,
+      message: `Successfully purged ${deletedStudents} student records and ${deletedUsers} user accounts (${totalDeleted} total)`
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
 
 export const exportStudentsData = async (req, res) => {
   try {
     const format = (req.query.format || 'json').toLowerCase();
-    const students = await Student.find({
-      $or: [
-        { 'intake_data.field_of_study': { $exists: true } },
-        { 'intake_data.class_level': { $exists: true } },
-        { 'intake_data.phone': { $exists: true } },
-        { 'intake_data.availability_per_week_hours': { $exists: true } },
-        { 'intake_data.candidate_id': { $exists: true } }
-      ]
-    }).sort({ createdAt: -1 });
+    const includeAll = req.query.all === 'true';
+    const query = includeAll
+      ? {}
+      : {
+          $or: [
+            { 'intake_data.field_of_study': { $exists: true } },
+            { 'intake_data.class_level': { $exists: true } },
+            { 'intake_data.phone': { $exists: true } },
+            { 'intake_data.availability_per_week_hours': { $exists: true } },
+            { 'intake_data.candidate_id': { $exists: true } },
+            { 'assessment_history.0': { $exists: true } }
+          ]
+        };
+
+    const students = await Student.find(query).sort({ createdAt: -1 });
 
     if (format === 'csv') {
-      const headers = ['Candidate ID', 'Full Name', 'Email', 'Institute Code', 'Field of Study', 'Enrolment Status', 'Created At'];
-      const rows = students.map(s => [
-        `"${s.candidate_id || ''}"`,
-        `"${(s.full_name || '').replace(/"/g, '""')}"`,
-        `"${(s.email || '').replace(/"/g, '""')}"`,
-        `"${s.institute_code || 'MSSU'}"`,
-        `"${s.field_of_study || 'STEM'}"`,
-        `"${s.enrolment_status || 'VERIFIED'}"`,
-        `"${s.createdAt ? s.createdAt.toISOString() : ''}"`
-      ]);
-      const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(r => r.join(','))].join('\r\n');
-      res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', 'attachment; filename="abhiruchi_candidates_export.csv"');
+      const dynamicKeys = new Set();
+      students.forEach(s => {
+        if (s.intake_data && typeof s.intake_data === 'object') {
+          Object.keys(s.intake_data).forEach(k => dynamicKeys.add(k));
+        }
+      });
+      const sortedIntakeKeys = Array.from(dynamicKeys).sort();
+
+      const baseHeaders = [
+        'Candidate ID',
+        'Full Name',
+        'Email',
+        'Institute Code',
+        'Cohort ID',
+        'Field of Study',
+        'Selected Domains',
+        'Enrolment Status',
+        'Lifecycle Status',
+        'Attempts Count',
+        'Latest Score',
+        'Latest Percentage',
+        'Latest Grade',
+        'Created At'
+      ];
+      const headers = [...baseHeaders, ...sortedIntakeKeys.map(k => `intake_${k}`)];
+      const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const fmtVal = (v) => (Array.isArray(v) ? v.join('; ') : (v && typeof v === 'object' ? JSON.stringify(v) : (v ?? '')));
+
+      const rows = students.map(s => {
+        const history = Array.isArray(s.assessment_history) ? s.assessment_history : [];
+        const latest = history[history.length - 1] || null;
+        const latestPct = latest
+          ? (latest.results?.percentage ?? Math.round((latest.score / ((latest.total_questions || 10) * 10)) * 100))
+          : '';
+        const baseCols = [
+          esc(s.candidate_id || ''),
+          esc(s.full_name || ''),
+          esc(s.email || ''),
+          esc(s.institute_code || ''),
+          esc(s.cohort_id || 'COHORT-2026-OCT-A'),
+          esc(s.field_of_study || ''),
+          esc((s.selected_domains || []).join('; ')),
+          esc(s.enrolment_status || ''),
+          esc(s.lifecycle_status || ''),
+          esc(history.length),
+          esc(latest?.score ?? ''),
+          esc(latestPct),
+          esc(latest?.results?.grade || ''),
+          esc(s.createdAt ? s.createdAt.toISOString() : '')
+        ];
+        const intakeCols = sortedIntakeKeys.map(k => esc(fmtVal(s.intake_data?.[k])));
+        return [...baseCols, ...intakeCols].join(',');
+      });
+
+      const csvContent = '\uFEFF' + [headers.map(esc).join(','), ...rows].join('\r\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="abhiruchi_complete_export.csv"');
       return res.send(csvContent);
     }
 
-    // Default canonical JSON format for Sampada handoff
+    // Default canonical JSON format including all intake & assessment inputs
     const payload = {
       source_system: 'abhiruchi',
-      schema_version: '1.0.0',
+      schema_version: '1.1.0',
       total_records: students.length,
       exported_at: new Date().toISOString(),
       candidates: students.map(s => ({
         candidate_id: s.candidate_id,
         abhiruchi_record_id: s._id,
+        user_id: s.user_id,
         name: s.full_name,
         email: s.email,
         email_verified: true,
-        institute_code: s.institute_code || 'MSSU',
+        institute_code: s.institute_code || null,
         cohort_id: s.cohort_id || 'COHORT-2026-OCT-A',
+        trace_id: s.trace_id || null,
         field_of_study: s.field_of_study,
+        selected_domains: s.selected_domains || [],
         enrolment_status: s.enrolment_status,
         lifecycle_status: s.lifecycle_status,
         intake_responses: s.intake_data || {},
+        assessment_history: s.assessment_history || [],
         submitted_at: s.createdAt
       }))
     };

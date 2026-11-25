@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { createPortal } from 'react-dom';
-import { Trash2, Download, FileText, Sparkles, Bot } from 'lucide-react';
+import { Navigate } from "react-router-dom";
+import { Trash2, Download, FileText, Sparkles, RefreshCw } from 'lucide-react';
 import toast from "react-hot-toast";
 import FormBuilder from "../components/FormBuilder";
 import QuestionBankManager from "../components/QuestionBankManager";
@@ -125,6 +126,9 @@ export default function Admin() {
     if (user?.role === "admin") {
       sessionStorage.setItem("is_admin", "1");
       setIsAdmin(true);
+    } else {
+      sessionStorage.removeItem("is_admin");
+      setIsAdmin(false);
     }
   }, [user]);
   const [students, setStudents] = useState([]);
@@ -170,8 +174,10 @@ export default function Admin() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [configToDelete, setConfigToDelete] = useState(null);
 
-  // Student delete confirmation
+  // Student delete confirmation & selection state
   const [studentDeleteConfirm, setStudentDeleteConfirm] = useState(null);
+  const [showAllAccounts, setShowAllAccounts] = useState(false);
+  const [selectedStudentIds, setSelectedStudentIds] = useState([]);
 
   const filtered = useMemo(() => {
     let list = [...students];
@@ -193,25 +199,31 @@ export default function Admin() {
     });
   }, [students, search]);
 
-  async function fetchStudents() {
+  async function fetchStudents(includeAllOverride, showFeedback = false) {
+    const includeAll = typeof includeAllOverride === 'boolean' ? includeAllOverride : showAllAccounts;
     setLoading(true);
     setError("");
 
     let studentList = [];
+    let apiError = null;
 
-    // 1. Try MERN Express API
+    // 1. Try MERN Express API (cache-busted)
     try {
-      const res = await ApiClient.get('/students');
+      const qs = new URLSearchParams();
+      if (includeAll) qs.set('all', 'true');
+      qs.set('_t', String(Date.now()));
+      const res = await ApiClient.get(`/students?${qs.toString()}`);
       const list = res?.data || res?.students || (Array.isArray(res) ? res : []);
-      if (Array.isArray(list) && list.length > 0) {
+      if (Array.isArray(list)) {
         studentList = list;
       }
     } catch (err) {
+      apiError = err;
       console.warn('ApiClient /students fetch failed, falling back to Supabase:', err.message);
     }
 
-    // 2. Fallback to Supabase if MERN API returned empty
-    if (studentList.length === 0) {
+    // 2. Fallback to Supabase only if MERN API failed
+    if (apiError && studentList.length === 0) {
       const { data, error: err } = await supabase
         .from(SUPABASE_TABLE)
         .select("*")
@@ -221,7 +233,16 @@ export default function Admin() {
       if (data) studentList = data;
     }
 
+    if (apiError && studentList.length === 0) {
+      const msg = apiError.message || "Failed to refresh student records from backend";
+      setError(msg);
+      if (showFeedback) toast.error(msg);
+    } else if (showFeedback) {
+      toast.success(`Refreshed ${studentList.length} student records`);
+    }
+
     setStudents(studentList);
+    setSelectedStudentIds([]);
     setLoading(false);
   }
 
@@ -233,15 +254,19 @@ export default function Admin() {
   }, [isAdmin]);
 
   // Form configuration functions
-  async function fetchFormConfigs() {
+  async function fetchFormConfigs(showFeedback = false) {
     try {
       const configs = await FormConfigService.getAllFormConfigs();
       setFormConfigs(configs);
 
       const active = await FormConfigService.getActiveFormConfig();
       setActiveFormConfig(active);
+      if (showFeedback) {
+        toast.success(`Refreshed ${configs.length} saved form configuration(s)`);
+      }
     } catch (err) {
       console.error("Error fetching form configs:", err);
+      if (showFeedback) toast.error("Failed to refresh form configurations");
     }
   }
 
@@ -522,34 +547,52 @@ export default function Admin() {
     setStudentDeleteConfirm(null);
   }
 
-  async function handlePurgeTestAccounts() {
-    const isConfirmed = window.confirm(
-      "Are you sure you want to clean up all test/dummy student accounts? (Accounts matching 'test', 'dummy', 'student@gurukul.com' will be permanently deleted from MongoDB. Admin accounts are preserved.)"
-    );
-    if (!isConfirmed) return;
-
-    const loadingToast = toast.loading("Purging test accounts...");
+  async function handleBulkDeleteSelected() {
+    if (selectedStudentIds.length === 0) return;
+    if (!window.confirm(`Permanently delete ${selectedStudentIds.length} selected student account(s) and their user accounts?`)) {
+      return;
+    }
+    const loadingToast = toast.loading(`Deleting ${selectedStudentIds.length} selected records...`);
     try {
-      const res = await ApiClient.post("/students/cleanup-dummy", { deleteTestKeywords: true });
-      toast.success(res?.message || "Test accounts purged successfully", { id: loadingToast });
+      const res = await ApiClient.post("/students/cleanup-dummy", { studentIds: selectedStudentIds });
+      toast.success(res?.message || "Selected accounts deleted", { id: loadingToast });
+      setSelectedStudentIds([]);
       fetchStudents();
     } catch (err) {
-      toast.error(err.message || "Failed to purge test accounts", { id: loadingToast });
+      toast.error(err.message || "Bulk delete failed", { id: loadingToast });
     }
   }
 
   function handleExportStudentsCSV() {
     try {
       ExportService.exportStudentsToCSV(filtered);
-      toast.success(`Exported ${filtered.length} student records to CSV`);
+      toast.success(`Exported ${filtered.length} student records (all inputs) to CSV`);
     } catch (err) {
       toast.error(err.message || "Export failed");
     }
   }
 
+  function handleExportStudentsExcel() {
+    try {
+      ExportService.exportAllToExcel(filtered, [], 'abhiruchi_complete_transport');
+      toast.success(`Exported ${filtered.length} student records (all inputs & attempts) to Excel (.xlsx)`);
+    } catch (err) {
+      toast.error(err.message || "Excel export failed");
+    }
+  }
+
+  function handleExportStudentsPDF() {
+    try {
+      ExportService.exportAllStudentsPDF(filtered);
+      toast.success(`Generated PDF report for ${filtered.length} student records`);
+    } catch (err) {
+      toast.error(err.message || "PDF export failed");
+    }
+  }
+
   function handleExportStudentsJSON() {
     try {
-      ExportService.exportAllToJSON({ students: filtered }, 'gurukul_students_backup');
+      ExportService.exportAllToJSON({ total_records: filtered.length, students: filtered }, 'abhiruchi_students_complete');
       toast.success(`Exported ${filtered.length} student records to JSON`);
     } catch (err) {
       toast.error(err.message || "Export failed");
@@ -557,28 +600,37 @@ export default function Admin() {
   }
 
   if (!isAdmin) {
-    return (
-      <div className="max-w-sm mx-auto text-white">
-        <h2 className="text-lg font-semibold mb-3">Admin Login</h2>
-        <AdminLogin
-          onSuccess={() => {
-            sessionStorage.setItem("is_admin", "1");
-            setIsAdmin(true);
-          }}
-        />
-      </div>
-    );
+    return <Navigate to={user ? "/dashboard" : "/sign-in"} replace />;
   }
 
+  const tabClass = (key) =>
+    `px-3.5 py-2 text-xs sm:text-sm font-medium rounded-xl whitespace-nowrap transition-all flex items-center gap-1.5 ${
+      activeTab === key
+        ? "bg-gradient-to-r from-orange-500 to-amber-600 text-white shadow-md shadow-orange-500/20"
+        : "text-white/70 hover:text-white hover:bg-white/10"
+    }`;
+
   return (
-    <div>
-      <div className="toolbar mb-4">
-        <h2 className="text-xl font-semibold">Admin Panel</h2>
-        <div className="flex items-center gap-2">
+    <div className="space-y-5">
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight text-white">Admin Control Center</h2>
+          <p className="text-xs sm:text-sm text-white/60 mt-0.5">
+            Manage candidates, dynamic forms, question banks, exports, and MITRA AI
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
           {activeTab === "students" && (
             <>
-              <button onClick={fetchStudents} className="btn">
-                Refresh
+              <button
+                type="button"
+                onClick={() => fetchStudents(showAllAccounts, true)}
+                disabled={loading}
+                className="btn flex items-center gap-1.5 disabled:opacity-60"
+                title="Refresh student records from database"
+              >
+                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                {loading ? 'Refreshing...' : 'Refresh'}
               </button>
               <button onClick={openAdd} className="btn btn-primary">
                 Add Student
@@ -625,6 +677,22 @@ export default function Admin() {
                 Sampada JSON
               </button>
               <button
+                onClick={handleExportStudentsPDF}
+                className="btn bg-red-500/20 text-red-300 hover:bg-red-500/30 border border-red-500/30 flex items-center gap-1.5"
+                title="Download complete cohort PDF report with all received inputs"
+              >
+                <FileText className="w-4 h-4" />
+                Export PDF
+              </button>
+              <button
+                onClick={handleExportStudentsExcel}
+                className="btn bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 border border-emerald-500/30 flex items-center gap-1.5"
+                title="Download multi-sheet Excel (.xlsx) workbook with all intake & assessment inputs"
+              >
+                <Download className="w-4 h-4" />
+                Export Excel
+              </button>
+              <button
                 onClick={handleExportStudentsCSV}
                 className="btn bg-green-500/20 text-green-300 hover:bg-green-500/30 border border-green-500/30 flex items-center gap-1.5"
                 title="Export student intake submissions to CSV"
@@ -644,7 +712,12 @@ export default function Admin() {
           )}
           {activeTab === "saved-configs" && (
             <>
-              <button onClick={fetchFormConfigs} className="btn">
+              <button
+                type="button"
+                onClick={() => fetchFormConfigs(true)}
+                className="btn flex items-center gap-1.5"
+              >
+                <RefreshCw className="w-4 h-4" />
                 Refresh
               </button>
               <button
@@ -676,105 +749,47 @@ export default function Admin() {
       </div>
 
       {/* Tab Navigation */}
-      <div className="mb-6">
-        <div className="flex border-b border-white/20">
-          <button
-            onClick={() => setActiveTab("students")}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === "students"
-                ? "border-orange-500 text-orange-400"
-                : "border-transparent text-white/70 hover:text-white"
-            }`}
-          >
-            Students ({students.length})
+      <div className="p-1.5 rounded-2xl bg-slate-950/65 border border-white/12 backdrop-blur-md overflow-x-auto">
+        <div className="flex items-center gap-1.5 min-w-max">
+          <button onClick={() => setActiveTab("students")} className={tabClass("students")}>
+            Students
+            <span className={`text-[11px] px-1.5 py-0.5 rounded-md ${activeTab === "students" ? "bg-black/25 text-white" : "bg-white/10 text-white/70"}`}>
+              {students.length}
+            </span>
           </button>
-          <button
-            onClick={() => setActiveTab("saved-configs")}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === "saved-configs"
-                ? "border-orange-500 text-orange-400"
-                : "border-transparent text-white/70 hover:text-white"
-            }`}
-          >
-            Saved Configs ({formConfigs.length})
+          <button onClick={() => setActiveTab("saved-configs")} className={tabClass("saved-configs")}>
+            Saved Configs
+            <span className={`text-[11px] px-1.5 py-0.5 rounded-md ${activeTab === "saved-configs" ? "bg-black/25 text-white" : "bg-white/10 text-white/70"}`}>
+              {formConfigs.length}
+            </span>
           </button>
-          <button
-            onClick={() => setActiveTab("forms")}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === "forms"
-                ? "border-orange-500 text-orange-400"
-                : "border-transparent text-white/70 hover:text-white"
-            }`}
-          >
+          <button onClick={() => setActiveTab("forms")} className={tabClass("forms")}>
             Form Builder
           </button>
-
-          <button
-            onClick={() => setActiveTab("student-analytics")}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === "student-analytics"
-                ? "border-orange-500 text-orange-400"
-                : "border-transparent text-white/70 hover:text-white"
-            }`}
-          >
+          <button onClick={() => setActiveTab("student-analytics")} className={tabClass("student-analytics")}>
             Student Analytics
           </button>
-          <button
-            onClick={() => setActiveTab("question-banks")}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === "question-banks"
-                ? "border-orange-500 text-orange-400"
-                : "border-transparent text-white/70 hover:text-white"
-            }`}
-          >
+          <button onClick={() => setActiveTab("question-banks")} className={tabClass("question-banks")}>
             Question Banks
           </button>
-          <button
-            onClick={() => setActiveTab("categories")}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === "categories"
-                ? "border-orange-500 text-orange-400"
-                : "border-transparent text-white/70 hover:text-white"
-            }`}
-          >
+          <button onClick={() => setActiveTab("categories")} className={tabClass("categories")}>
             Form Categories
           </button>
-          <button
-            onClick={() => setActiveTab("question-categories")}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === "question-categories"
-                ? "border-orange-500 text-orange-400"
-                : "border-transparent text-white/70 hover:text-white"
-            }`}
-          >
+          <button onClick={() => setActiveTab("question-categories")} className={tabClass("question-categories")}>
             Question Categories
           </button>
-          <button
-            onClick={() => setActiveTab("ai-model")}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 ${
-              activeTab === "ai-model"
-                ? "border-orange-500 text-orange-400"
-                : "border-transparent text-white/70 hover:text-white"
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5 text-orange-400" />
-            AI Model (Uniguru/Mitra)
+          <button onClick={() => setActiveTab("ai-model")} className={tabClass("ai-model")}>
+            <Sparkles className={`w-3.5 h-3.5 ${activeTab === "ai-model" ? "text-white" : "text-orange-400"}`} />
+            AI Model (MITRA)
           </button>
-          <button
-            onClick={() => setActiveTab("database-test")}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === "database-test"
-                ? "border-orange-500 text-orange-400"
-                : "border-transparent text-white/70 hover:text-white"
-            }`}
-          >
+          <button onClick={() => setActiveTab("database-test")} className={tabClass("database-test")}>
             Database Test
           </button>
         </div>
       </div>
 
       {error && (
-        <div className="mb-4 rounded-md border border-red-400/30 bg-red-500/15 p-3 text-red-200">
+        <div className="rounded-xl border border-red-400/30 bg-red-500/15 p-3 text-sm text-red-200">
           {error}
         </div>
       )}
@@ -782,31 +797,69 @@ export default function Admin() {
       {/* Students Tab */}
       {activeTab === "students" && (
         <>
-          <div className="mb-4 flex items-center gap-2">
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by name, grade, id, email"
-              aria-label="Search"
-              className="input sm:w-72"
-            />
-            <button
-              onClick={openAdd}
-              className="inline-flex items-center rounded-md bg-orange-500 px-3 py-2 text-white text-sm hover:bg-orange-600 focus:outline-none focus:ring-2 focus:ring-orange-400"
-            >
-              Add
-            </button>
+          <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-white/12 backdrop-blur-md flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-3 flex-1 min-w-[240px]">
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by name, candidate ID, institute, grade, email..."
+                aria-label="Search"
+                className="input sm:max-w-sm"
+              />
+              <label className="inline-flex items-center gap-2 text-xs text-white/80 cursor-pointer select-none px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10">
+                <input
+                  type="checkbox"
+                  checked={showAllAccounts}
+                  onChange={(e) => {
+                    const next = e.target.checked;
+                    setShowAllAccounts(next);
+                    fetchStudents(next);
+                  }}
+                  className="accent-orange-500"
+                />
+                Show empty / no-intake accounts
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-white/50 hidden sm:inline">
+                Showing {filtered.length} of {students.length}
+              </span>
+              {selectedStudentIds.length > 0 && (
+                <button
+                  onClick={handleBulkDeleteSelected}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-red-600 hover:bg-red-700 px-3.5 py-2 text-white text-xs font-semibold shadow-md transition-all"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete Selected ({selectedStudentIds.length})
+                </button>
+              )}
+            </div>
           </div>
 
           {loading && students.length === 0 ? (
-            <div className="py-10 text-white/70">Loading...</div>
+            <div className="py-12 text-center text-white/70">Loading student records...</div>
           ) : students.length === 0 ? (
             <EmptyState onAdd={openAdd} />
           ) : (
             <div className="table-wrap overflow-x-auto">
               <table className="w-full text-left text-sm text-white/90">
-                <thead className="bg-white/10 text-xs uppercase tracking-wider text-white/70 border-b border-white/10">
+                <thead className="bg-slate-950/65 text-[11px] uppercase tracking-wider text-white/65 border-b border-white/10">
                   <tr>
+                    <th className="px-3 py-3 w-8">
+                      <input
+                        type="checkbox"
+                        checked={filtered.length > 0 && selectedStudentIds.length === filtered.length}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedStudentIds(filtered.map(s => String(s.id || s._id)));
+                          } else {
+                            setSelectedStudentIds([]);
+                          }
+                        }}
+                        className="accent-orange-500"
+                        title="Select all visible students"
+                      />
+                    </th>
                     <th className="px-4 py-3 font-semibold">Student</th>
                     <th className="px-3 py-3 font-semibold">Candidate ID</th>
                     <th className="px-3 py-3 font-semibold">Institute</th>
@@ -817,11 +870,28 @@ export default function Admin() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/10">
-                  {filtered.map((s) => (
+                  {filtered.map((s) => {
+                    const rowId = String(s.id || s._id);
+                    const isChecked = selectedStudentIds.includes(rowId);
+                    return (
                     <tr
-                      key={s.id || s._id}
-                      className="hover:bg-white/5 transition-colors"
+                      key={rowId}
+                      className={`hover:bg-white/5 transition-colors ${isChecked ? 'bg-orange-500/10' : ''}`}
                     >
+                      <td className="px-3 py-3">
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedStudentIds(prev => [...prev, rowId]);
+                            } else {
+                              setSelectedStudentIds(prev => prev.filter(id => id !== rowId));
+                            }
+                          }}
+                          className="accent-orange-500"
+                        />
+                      </td>
                       <td className="px-4 py-3">
                         <div className="font-medium text-white">{s.name || 'Unnamed Student'}</div>
                         <div className="text-xs text-white/60 truncate max-w-[180px] sm:max-w-xs">{s.email || '—'}</div>
@@ -878,6 +948,21 @@ export default function Admin() {
                       <td className="px-4 py-3 whitespace-nowrap text-right">
                         <div className="flex items-center justify-end gap-2">
                           <button
+                            onClick={() => {
+                              try {
+                                ExportService.exportStudentScorecardPDF(s);
+                                toast.success(`Downloaded PDF dossier for ${s.name}`);
+                              } catch (err) {
+                                toast.error(err.message || 'PDF export failed');
+                              }
+                            }}
+                            className="btn px-2.5 py-1 text-xs bg-orange-500/15 text-orange-300 hover:bg-orange-500/30 border border-orange-500/30 flex items-center gap-1"
+                            title={`Download complete PDF dossier for ${s.name}`}
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                            PDF
+                          </button>
+                          <button
                             onClick={() => openEdit(s)}
                             className="btn px-2.5 py-1 text-xs"
                           >
@@ -894,7 +979,8 @@ export default function Admin() {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

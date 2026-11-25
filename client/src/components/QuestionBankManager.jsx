@@ -39,18 +39,24 @@ const getIconComponent = (iconName, category) => {
 };
 
 const DIFFICULTY_LEVELS = {
-  EASY: 'Easy',
-  MEDIUM: 'Medium',
-  HARD: 'Hard'
+  EASY: 'easy',
+  MEDIUM: 'medium',
+  HARD: 'hard'
+};
+
+const DIFFICULTY_LABELS = {
+  easy: 'Easy',
+  medium: 'Medium',
+  hard: 'Hard'
 };
 
 // Supported school grades for targeting (extend as needed)
 const GRADES = ['1','2','3','4','5','6','7','8','9','10','11','12'];
 
 const DIFFICULTY_COLORS = {
-  [DIFFICULTY_LEVELS.EASY]: 'text-green-400 bg-green-400/10 border-green-400/20',
-  [DIFFICULTY_LEVELS.MEDIUM]: 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20',
-  [DIFFICULTY_LEVELS.HARD]: 'text-red-400 bg-red-400/10 border-red-400/20'
+  easy: 'text-green-400 bg-green-400/10 border-green-400/20',
+  medium: 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20',
+  hard: 'text-red-400 bg-red-400/10 border-red-400/20'
 };
 
 const FIELD_COLORS = [
@@ -67,16 +73,18 @@ const FIELD_COLORS = [
 ];
 
 function QuestionCard({ question, questionFields, studyFields, onEdit, onDelete, onManageFields, aiEnabled, categories }) {
-  const IconComponent = getIconComponent(categories?.find(cat => cat.name === question.category)?.icon, question.category);
-  const difficultyClass = DIFFICULTY_COLORS[question.difficulty] || DIFFICULTY_COLORS[DIFFICULTY_LEVELS.EASY];
-  const isAiQuestion = question.created_by === 'ai';
+  const IconComponent = getIconComponent(categories?.find(cat => cat.name?.toLowerCase() === question.category?.toLowerCase())?.icon, question.category);
+  const diffKey = (question.difficulty || 'easy').toLowerCase();
+  const difficultyClass = DIFFICULTY_COLORS[diffKey] || DIFFICULTY_COLORS.easy;
+  const difficultyLabel = DIFFICULTY_LABELS[diffKey] || question.difficulty || 'Easy';
+  const isAiQuestion = question.created_by === 'ai' || question.is_ai_generated;
 
   return (
     <div 
-      className={`rounded-xl border border-white/20 ${isAiQuestion && !aiEnabled ? 'bg-gray-800/30' : 'bg-white/10'} p-4 space-y-4`}
+      className={`rounded-2xl border border-white/15 ${isAiQuestion && !aiEnabled ? 'bg-slate-900/40' : 'bg-slate-950/60 hover:border-orange-500/40'} backdrop-blur-md p-5 space-y-4 shadow-lg transition-all`}
       style={{
         // When AI is disabled and this is an AI question, use a dimmer background
-        backgroundColor: isAiQuestion && !aiEnabled ? 'rgba(100, 116, 139, 0.3)' : undefined
+        backgroundColor: isAiQuestion && !aiEnabled ? 'rgba(30, 41, 59, 0.45)' : undefined
       }}
     >
       <div className="flex items-start justify-between">
@@ -84,7 +92,7 @@ function QuestionCard({ question, questionFields, studyFields, onEdit, onDelete,
           <IconComponent className="h-5 w-5 text-orange-400" />
           <span className="text-sm font-medium text-orange-400">{question.category}</span>
           <span className={`text-xs px-2 py-1 rounded-full border ${difficultyClass}`}>
-            {question.difficulty}
+            {difficultyLabel}
           </span>
           {isAiQuestion && (
             <span 
@@ -197,7 +205,10 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
   const [managingQuestion, setManagingQuestion] = useState(null);
   const [showFieldSettings, setShowFieldSettings] = useState(false);
   const [editingField, setEditingField] = useState(null);
+  const [showFieldForm, setShowFieldForm] = useState(false);
+  const [fieldForm, setFieldForm] = useState({ field_id: '', name: '', short_name: '', description: '' });
   const [fieldDeleteConfirm, setFieldDeleteConfirm] = useState(null);
+  const [visibleCount, setVisibleCount] = useState(30);
   const [stats, setStats] = useState({});
   const [aiEnabled, setAiEnabled] = useState(true); // This will be updated with global setting
   const [showTooltip, setShowTooltip] = useState(false); // Tooltip state
@@ -274,7 +285,7 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
 
       // 1. Try loading questions from MERN API (MongoDB)
       try {
-        const qRes = await ApiClient.get('/questions');
+        const qRes = await ApiClient.get('/questions?limit=all');
         const list = qRes?.data || qRes?.questions || (Array.isArray(qRes) ? qRes : []);
         if (Array.isArray(list) && list.length > 0) {
           questionsList = list;
@@ -318,8 +329,8 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
       }
       setStudyFields(fieldsList);
 
-      // Load question categories
-      const categories = await DynamicQuestionCategoryService.getAllCategories();
+      // Load question categories fresh from DB
+      const categories = await DynamicQuestionCategoryService.loadCategories();
       setQuestionCategories(categories);
 
       // Group by question_id from target_domains in question objects
@@ -352,14 +363,16 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
       );
     }
     
-    // Apply category filter
+    // Apply category filter (case-insensitive)
     if (selectedCategory) {
-      result = result.filter(q => q.category === selectedCategory);
+      const catLower = selectedCategory.toLowerCase();
+      result = result.filter(q => (q.category || '').toLowerCase() === catLower);
     }
     
-    // Apply difficulty filter
+    // Apply difficulty filter (case-insensitive)
     if (selectedDifficulty) {
-      result = result.filter(q => q.difficulty === selectedDifficulty);
+      const diffLower = selectedDifficulty.toLowerCase();
+      result = result.filter(q => (q.difficulty || '').toLowerCase() === diffLower);
     }
     
     // Apply field filter
@@ -372,10 +385,11 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
     
     // When AI is disabled, filter out AI-generated questions
     if (!aiEnabled) {
-      result = result.filter(q => q.created_by !== 'ai');
+      result = result.filter(q => q.created_by !== 'ai' && !q.is_ai_generated);
     }
     
     setFilteredQuestions(result);
+    setVisibleCount(30);
   }
 
   function calculateStats() {
@@ -524,9 +538,32 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
     }
   }
 
+  // Quoted-CSV row splitter
+  const parseCSVLine = (line) => {
+    const result = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"' && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else if (ch === '"') {
+        inQuotes = !inQuotes;
+      } else if (ch === ',' && !inQuotes) {
+        result.push(current.trim());
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  };
+
   async function handleBulkImport() {
     if (!bulkJsonText.trim()) {
-      toast.error('Please paste question JSON array or CSV');
+      toast.error('Please paste question JSON array or CSV, or upload a file');
       return;
     }
     setIsBulkImporting(true);
@@ -537,17 +574,21 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
         const raw = JSON.parse(trimmed);
         parsed = Array.isArray(raw) ? raw : [raw];
       } else {
-        // Simple CSV parser
-        const lines = trimmed.split('\n').filter(l => l.trim().length > 0);
-        parsed = lines.map((line, idx) => {
-          const parts = line.split(',').map(p => p.trim());
+        const lines = trimmed.split(/\r?\n/).filter(l => l.trim().length > 0);
+        // Skip header row if first column looks like 'question_text' or 'question'
+        const firstCols = parseCSVLine(lines[0]).map(c => c.toLowerCase());
+        const startIdx = (firstCols[0]?.includes('question')) ? 1 : 0;
+        parsed = lines.slice(startIdx).map((line, idx) => {
+          const parts = parseCSVLine(line);
+          const opts = parts.slice(1, 5).filter(Boolean);
           return {
             question_id: `bulk_${Date.now()}_${idx}`,
             question_text: parts[0] || `Question ${idx + 1}`,
-            options: parts.slice(1, 5).filter(Boolean),
-            correct_answer: parts[5] || parts[1] || '',
-            category: bulkCategoryDefault || 'General',
-            difficulty: bulkDifficultyDefault || 'medium'
+            options: opts,
+            correct_answer: parts[5] || opts[0] || '',
+            category: parts[6] || bulkCategoryDefault || 'General',
+            difficulty: parts[7] || bulkDifficultyDefault || 'medium',
+            explanation: parts[8] || ''
           };
         });
       }
@@ -581,16 +622,64 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
       loadData();
     } catch (err) {
       console.error('Bulk import error:', err);
-      toast.error('Bulk import failed: ' + (err.message || 'Check JSON format'));
+      toast.error('Bulk import failed: ' + (err.message || 'Check JSON/CSV format'));
     } finally {
       setIsBulkImporting(false);
     }
   }
 
+  async function handleSaveField() {
+    if (!fieldForm.name?.trim()) {
+      toast.error('Field name is required');
+      return;
+    }
+    try {
+      if (editingField) {
+        await ApiClient.put(`/fields/${editingField.field_id}`, {
+          name: fieldForm.name.trim(),
+          short_name: fieldForm.short_name?.trim() || fieldForm.name.trim(),
+          description: fieldForm.description?.trim() || ''
+        });
+        toast.success('Study field updated');
+      } else {
+        await ApiClient.post('/fields', {
+          field_id: fieldForm.field_id?.trim() || undefined,
+          name: fieldForm.name.trim(),
+          short_name: fieldForm.short_name?.trim() || fieldForm.name.trim(),
+          description: fieldForm.description?.trim() || ''
+        });
+        toast.success('Study field added');
+      }
+      setShowFieldForm(false);
+      setEditingField(null);
+      setFieldForm({ field_id: '', name: '', short_name: '', description: '' });
+      loadData();
+    } catch (err) {
+      toast.error('Failed to save study field: ' + (err.message || ''));
+    }
+  }
+
+  async function handleDeleteField(field) {
+    try {
+      await ApiClient.delete(`/fields/${field.field_id}`);
+      toast.success(`Study field "${field.name}" removed`);
+      setFieldDeleteConfirm(null);
+      loadData();
+    } catch (err) {
+      toast.error('Failed to delete study field: ' + (err.message || ''));
+    }
+  }
+
   const uniqueCategories = useMemo(() => {
-    const categories = [...new Set(questions.map(q => q.category))];
-    return categories.filter(Boolean).sort();
-  }, [questions]);
+    const fromQuestions = questions.map(q => q.category).filter(Boolean);
+    const fromCategoryManager = questionCategories.map(c => c.name).filter(Boolean);
+    const mergedMap = new Map();
+    [...fromCategoryManager, ...fromQuestions].forEach((cat) => {
+      const key = cat.trim().toLowerCase();
+      if (!mergedMap.has(key)) mergedMap.set(key, cat.trim());
+    });
+    return Array.from(mergedMap.values()).sort((a, b) => a.localeCompare(b));
+  }, [questions, questionCategories]);
 
   if (loading) {
     return (
@@ -601,11 +690,11 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
   }
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className="p-2 sm:p-4 max-w-7xl mx-auto">
       <div className="mb-8">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
           <div>
-            <h1 className="text-3xl font-bold text-white mb-2">Question Bank</h1>
+            <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">Question Bank</h1>
             <div className="flex items-center gap-2">
               <div className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs ${aiEnabled ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'}`}>
                 <div className={`w-2 h-2 rounded-full ${aiEnabled ? 'bg-green-400' : 'bg-gray-400'}`}></div>
@@ -701,23 +790,23 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <div className="bg-white/10 rounded-xl p-4 border border-white/20">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div className="bg-slate-950/60 backdrop-blur-md rounded-2xl p-4 border border-white/15 border-l-4 border-l-orange-500 shadow-lg">
             <div className="text-2xl font-bold text-white">{filteredQuestions.length}</div>
-            <div className="text-white/70 text-sm">Total Questions</div>
+            <div className="text-white/65 text-xs uppercase tracking-wider mt-0.5">Total Questions</div>
           </div>
           
           {uniqueCategories.slice(0, 3).map(category => (
-            <div key={category} className="bg-white/10 rounded-xl p-4 border border-white/20">
+            <div key={category} className="bg-slate-950/60 backdrop-blur-md rounded-2xl p-4 border border-white/15 shadow-lg">
               <div className="text-2xl font-bold text-white">{stats[category]?.total || 0}</div>
-              <div className="text-white/70 text-sm">{category}</div>
+              <div className="text-white/65 text-xs uppercase tracking-wider mt-0.5 truncate">{category}</div>
             </div>
           ))}
         </div>
 
         {/* Filters */}
-        <div className="bg-white/10 rounded-xl p-4 border border-white/20 mb-6">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="bg-slate-950/60 backdrop-blur-md rounded-2xl p-4 border border-white/15 mb-6 shadow-lg">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-white/50 w-4 h-4" />
               <input
@@ -725,40 +814,40 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
                 placeholder="Search questions..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 rounded-lg bg-white/10 border border-white/20 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-orange-500/50"
+                className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900/70 border border-white/15 text-sm text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-orange-500/50"
               />
             </div>
             
             <select
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
-              className="px-4 py-2 rounded-lg bg-white/10 border border-white/20 text-white"
+              className="px-4 py-2 rounded-xl bg-slate-900/70 border border-white/15 text-sm text-white"
             >
-              <option value="">All Categories</option>
+              <option value="" className="bg-gray-900 text-white">All Categories</option>
               {uniqueCategories.map(category => (
-                <option key={category} value={category}>{category}</option>
+                <option key={category} value={category} className="bg-gray-900 text-white">{category}</option>
               ))}
             </select>
             
             <select
               value={selectedDifficulty}
               onChange={(e) => setSelectedDifficulty(e.target.value)}
-              className="px-4 py-2 rounded-lg bg-white/10 border border-white/20 text-white"
+              className="px-4 py-2 rounded-xl bg-slate-900/70 border border-white/15 text-sm text-white"
             >
-              <option value="">All Difficulties</option>
+              <option value="" className="bg-gray-900 text-white">All Difficulties</option>
               {Object.values(DIFFICULTY_LEVELS).map(difficulty => (
-                <option key={difficulty} value={difficulty}>{difficulty}</option>
+                <option key={difficulty} value={difficulty} className="bg-gray-900 text-white">{DIFFICULTY_LABELS[difficulty]}</option>
               ))}
             </select>
             
             <select
               value={selectedField}
               onChange={(e) => setSelectedField(e.target.value)}
-              className="px-4 py-2 rounded-lg bg-white/10 border border-white/20 text-white"
+              className="px-4 py-2 rounded-xl bg-slate-900/70 border border-white/15 text-sm text-white"
             >
-              <option value="">All Fields</option>
+              <option value="" className="bg-gray-900 text-white">All Fields</option>
               {studyFields.map(field => (
-                <option key={field.field_id} value={field.field_id}>{field.name}</option>
+                <option key={field.field_id} value={field.field_id} className="bg-gray-900 text-white">{field.name}</option>
               ))}
             </select>
           </div>
@@ -766,23 +855,22 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
 
         {/* Questions Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredQuestions.map(question => (
+          {filteredQuestions.slice(0, visibleCount).map(question => (
             <QuestionCard
-              key={question.question_id}
+              key={question.question_id || question._id}
               question={question}
               questionFields={questionFieldMappings[question.question_id] || []}
               studyFields={studyFields}
               categories={questionCategories}
               onEdit={(q) => {
                 setEditingQuestion(q);
-                // Initialize form with existing question
                 const mappedFields = questionFieldMappings[q.question_id] || [];
                 setQForm({
                   question_text: q.question_text || '',
-                  options: Array.isArray(q.options) ? q.options : ['', '', '', ''],
+                  options: Array.isArray(q.options) && q.options.length >= 4 ? q.options.slice(0, 4) : ['', '', '', ''],
                   correct_answer: q.correct_answer || '',
                   category: q.category || '',
-                  difficulty: q.difficulty || DIFFICULTY_LEVELS.EASY,
+                  difficulty: (q.difficulty || DIFFICULTY_LEVELS.EASY).toLowerCase(),
                   explanation: q.explanation || '',
                   vedic_connection: q.vedic_connection || '',
                   modern_application: q.modern_application || '',
@@ -803,6 +891,23 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
             />
           ))}
         </div>
+
+        {filteredQuestions.length > visibleCount && (
+          <div className="mt-6 flex items-center justify-center gap-3">
+            <button
+              onClick={() => setVisibleCount((c) => c + 30)}
+              className="px-5 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm font-medium border border-white/20 transition-all"
+            >
+              Load More ({filteredQuestions.length - visibleCount} remaining)
+            </button>
+            <button
+              onClick={() => setVisibleCount(filteredQuestions.length)}
+              className="px-4 py-2 rounded-lg bg-orange-500/20 hover:bg-orange-500/30 text-orange-300 text-sm font-medium border border-orange-500/30 transition-all"
+            >
+              Show All ({filteredQuestions.length})
+            </button>
+          </div>
+        )}
 
         {filteredQuestions.length === 0 && (
           <div className="text-center py-12">
@@ -866,8 +971,26 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
                     <h4 className="text-white/90 font-semibold">Targeting</h4>
                     {/* Study Fields */}
                     <div>
-                      <label className="block text-sm text-white/80 mb-2">Assign to Study Fields</label>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="block text-sm text-white/80">Assign to Study Fields / Domains</label>
+                        <div className="flex gap-2 text-xs">
+                          <button
+                            type="button"
+                            onClick={() => setQForm(f => ({ ...f, selectedFieldIds: studyFields.map(sf => sf.field_id) }))}
+                            className="text-orange-400 hover:text-orange-300"
+                          >
+                            Select All
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setQForm(f => ({ ...f, selectedFieldIds: [] }))}
+                            className="text-white/60 hover:text-white"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
                         {studyFields.map(field => {
                           const checked = qForm.selectedFieldIds.includes(field.field_id);
                           return (
@@ -884,8 +1007,7 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
                                   }));
                                 }}
                               />
-                              <span className="text-lg">{field.icon}</span>
-                              <span className="text-white">{field.name}</span>
+                              <span className="text-sm text-white">{field.name}</span>
                             </label>
                           );
                         })}
@@ -895,37 +1017,37 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
                     {/* Category and Education Level */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-sm text-white/80 mb-1">Category</label>
+                        <label className="block text-sm text-white/80 mb-1">Category *</label>
                         <div className="relative">
                           <select
                             value={qForm.category}
                             onChange={(e) => setQForm(f => ({ ...f, category: e.target.value }))}
                             className="w-full appearance-none pr-10 px-3 py-2 rounded-lg bg-white/10 border border-white/20 text-white focus:outline-none focus:ring-2 focus:ring-orange-400 focus:border-orange-400"
                           >
-                            <option value="">Select category</option>
-                            {questionCategories.map(cat => (
-                              <option key={cat.category_id} value={cat.name}>{cat.name}</option>
+                            <option value="" className="bg-gray-900 text-white">Select category</option>
+                            {uniqueCategories.map(catName => (
+                              <option key={catName} value={catName} className="bg-gray-900 text-white">{catName}</option>
                             ))}
                           </select>
                           <ChevronDown className="w-4 h-4 text-white/60 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                         </div>
                       </div>
                       <div>
-                        <label className="block text-sm text-white/80 mb-1">Education Level</label>
+                        <label className="block text-sm text-white/80 mb-1">Education Level (optional)</label>
                         <div className="relative">
                           <select
                             value={qForm.selectedLevel}
                             onChange={(e) => setQForm(f => ({ ...f, selectedLevel: e.target.value }))}
                             className="w-full appearance-none pr-10 px-3 py-2 rounded-lg bg-white/10 border border-white/20 text-white focus:outline-none focus:ring-2 focus:ring-orange-400 focus:border-orange-400"
                           >
-                            <option value="">Select level</option>
-                            <option value="9">9th Grade</option>
-                            <option value="10">10th Grade</option>
-                            <option value="11">11th Grade</option>
-                            <option value="12">12th Grade</option>
-                            <option value="undergraduate">Undergraduate</option>
-                            <option value="graduate">Graduate</option>
-                            <option value="postgraduate">Postgraduate</option>
+                            <option value="" className="bg-gray-900 text-white">All / General</option>
+                            <option value="9" className="bg-gray-900 text-white">9th Grade</option>
+                            <option value="10" className="bg-gray-900 text-white">10th Grade</option>
+                            <option value="11" className="bg-gray-900 text-white">11th Grade</option>
+                            <option value="12" className="bg-gray-900 text-white">12th Grade</option>
+                            <option value="undergraduate" className="bg-gray-900 text-white">Undergraduate</option>
+                            <option value="graduate" className="bg-gray-900 text-white">Graduate</option>
+                            <option value="postgraduate" className="bg-gray-900 text-white">Postgraduate</option>
                           </select>
                           <ChevronDown className="w-4 h-4 text-white/60 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                         </div>
@@ -935,7 +1057,7 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
 
                   {/* Question Text */}
                   <div>
-                    <label className="block text-sm text-white/80 mb-1">Question Text</label>
+                    <label className="block text-sm text-white/80 mb-1">Question Text *</label>
                     <textarea
                       value={qForm.question_text}
                       onChange={(e) => setQForm(f => ({ ...f, question_text: e.target.value }))}
@@ -955,7 +1077,7 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
                           className="w-full appearance-none pr-10 px-3 py-2 rounded-lg bg-white/10 border border-white/20 text-white focus:outline-none focus:ring-2 focus:ring-orange-400 focus:border-orange-400"
                         >
                           {Object.values(DIFFICULTY_LEVELS).map(d => (
-                            <option key={d} value={d}>{d}</option>
+                            <option key={d} value={d} className="bg-gray-900 text-white">{DIFFICULTY_LABELS[d]}</option>
                           ))}
                         </select>
                         <ChevronDown className="w-4 h-4 text-white/60 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -1046,10 +1168,8 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
                       if (!qForm.category) errors.push('Category');
                       if (!qForm.question_text.trim()) errors.push('Question Text');
                       const filledOptions = qForm.options.filter(o => o && o.trim());
-                      if (filledOptions.length !== 4) errors.push('All 4 Options');
+                      if (filledOptions.length < 2) errors.push('At least 2 Options');
                       if (!filledOptions.includes(qForm.correct_answer)) errors.push('Valid Correct Answer');
-                      if (qForm.selectedFieldIds.length === 0) errors.push('At least one Study Field');
-                      if (!qForm.selectedLevel) errors.push('Education Level');
                       if (errors.length) {
                         toast.error(`Please provide: ${errors.join(', ')}`);
                         return;
@@ -1209,53 +1329,148 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
               </div>
               
               <div className="space-y-6">
-                <div>
-                  <h3 className="text-lg font-medium text-white mb-4">Study Fields</h3>
-                  <div className="space-y-3">
-                    {studyFields.map(field => (
-                      <div key={field.field_id} className="flex items-center justify-between p-3 rounded-lg border border-white/20 bg-white/5">
-                        <div className="flex items-center gap-3">
-                          <span className="text-xl">{field.icon}</span>
-                          <div>
-                            <div className="text-white font-medium">{field.name}</div>
-                            <div className="text-white/70 text-sm">{field.description}</div>
-                          </div>
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => {
-                              setEditingField(field);
-                              setShowFieldSettings(false);
-                              // Would open edit form in a real implementation
-                            }}
-                            className="px-3 py-1 rounded bg-white/10 text-white text-sm hover:bg-white/20"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => setFieldDeleteConfirm(field)}
-                            className="px-3 py-1 rounded bg-red-500/20 text-red-400 text-sm hover:bg-red-500/30"
-                          >
-                            Delete
-                          </button>
-                        </div>
+                {showFieldForm ? (
+                  <div className="p-4 rounded-xl border border-white/20 bg-white/5 space-y-4">
+                    <h3 className="text-base font-semibold text-white">
+                      {editingField ? `Edit Field: ${editingField.name}` : 'Add New Study Field / Domain'}
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs text-white/70 mb-1">Field Name *</label>
+                        <input
+                          type="text"
+                          value={fieldForm.name}
+                          onChange={(e) => setFieldForm(f => ({ ...f, name: e.target.value }))}
+                          placeholder="e.g. Cloud Computing"
+                          className="w-full px-3 py-2 rounded-lg bg-white/10 border border-white/20 text-white text-sm"
+                        />
                       </div>
-                    ))}
+                      <div>
+                        <label className="block text-xs text-white/70 mb-1">Short Name</label>
+                        <input
+                          type="text"
+                          value={fieldForm.short_name}
+                          onChange={(e) => setFieldForm(f => ({ ...f, short_name: e.target.value }))}
+                          placeholder="e.g. Cloud"
+                          className="w-full px-3 py-2 rounded-lg bg-white/10 border border-white/20 text-white text-sm"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-white/70 mb-1">Description</label>
+                      <textarea
+                        rows={2}
+                        value={fieldForm.description}
+                        onChange={(e) => setFieldForm(f => ({ ...f, description: e.target.value }))}
+                        placeholder="Key topics and skills covered..."
+                        className="w-full px-3 py-2 rounded-lg bg-white/10 border border-white/20 text-white text-sm"
+                      />
+                    </div>
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { setShowFieldForm(false); setEditingField(null); }}
+                        className="px-3 py-1.5 rounded-lg bg-white/10 text-white/80 text-sm hover:bg-white/20"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSaveField}
+                        className="px-4 py-1.5 rounded-lg bg-orange-500 text-white text-sm font-medium hover:bg-orange-600"
+                      >
+                        Save Field
+                      </button>
+                    </div>
                   </div>
-                </div>
-                
-                <button
-                  onClick={() => {
-                    setEditingField(null);
-                    setShowFieldSettings(false);
-                    // Would open add form in a real implementation
-                  }}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white/10 text-white rounded-lg border border-white/20 hover:bg-white/20 transition-all"
-                >
-                  <Plus className="w-4 h-4" />
-                  Add New Field
-                </button>
+                ) : (
+                  <>
+                    <div>
+                      <h3 className="text-lg font-medium text-white mb-4">Study Fields ({studyFields.length})</h3>
+                      <div className="space-y-3">
+                        {studyFields.map(field => (
+                          <div key={field.field_id} className="flex items-center justify-between p-3 rounded-lg border border-white/20 bg-white/5">
+                            <div className="flex items-center gap-3">
+                              <div>
+                                <div className="text-white font-medium">{field.name} <span className="text-xs text-white/50 font-mono">({field.field_id})</span></div>
+                                <div className="text-white/70 text-sm">{field.description}</div>
+                              </div>
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => {
+                                  setEditingField(field);
+                                  setFieldForm({
+                                    field_id: field.field_id,
+                                    name: field.name || '',
+                                    short_name: field.short_name || '',
+                                    description: field.description || ''
+                                  });
+                                  setShowFieldForm(true);
+                                }}
+                                className="px-3 py-1 rounded bg-white/10 text-white text-sm hover:bg-white/20"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                onClick={() => setFieldDeleteConfirm(field)}
+                                className="px-3 py-1 rounded bg-red-500/20 text-red-400 text-sm hover:bg-red-500/30"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        setEditingField(null);
+                        setFieldForm({ field_id: '', name: '', short_name: '', description: '' });
+                        setShowFieldForm(true);
+                      }}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-orange-500/20 text-orange-300 rounded-lg border border-orange-500/30 hover:bg-orange-500/30 transition-all"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Add New Field
+                    </button>
+                  </>
+                )}
               </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Field Delete Confirmation Modal */}
+      {fieldDeleteConfirm && createPortal(
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4"
+          onClick={() => setFieldDeleteConfirm(null)}
+        >
+          <div
+            className="bg-gray-900 rounded-2xl border border-white/20 w-full max-w-sm p-6 text-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-bold text-white mb-2">Remove Study Field?</h3>
+            <p className="text-white/70 text-sm mb-5">
+              Deactivate "{fieldDeleteConfirm.name}" from active study fields?
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setFieldDeleteConfirm(null)}
+                className="flex-1 px-4 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/20"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDeleteField(fieldDeleteConfirm)}
+                className="flex-1 px-4 py-2 rounded-lg bg-red-600 text-white text-sm hover:bg-red-700"
+              >
+                Remove
+              </button>
             </div>
           </div>
         </div>,
@@ -1297,9 +1512,9 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
                   onChange={(e) => setBulkDomain(e.target.value)}
                   className="w-full bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm text-white"
                 >
-                  <option value="">Auto / Multi-domain</option>
+                  <option value="" className="bg-gray-900 text-white">Auto / Multi-domain</option>
                   {studyFields.map(f => (
-                    <option key={f.field_id} value={f.field_id}>{f.name}</option>
+                    <option key={f.field_id} value={f.field_id} className="bg-gray-900 text-white">{f.name}</option>
                   ))}
                 </select>
               </div>
@@ -1308,11 +1523,17 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
                 <label className="block text-xs font-medium text-white/80 mb-1">Default Category</label>
                 <input
                   type="text"
+                  list="bulk-category-list"
                   placeholder="e.g. Coding, IoT"
                   value={bulkCategoryDefault}
                   onChange={(e) => setBulkCategoryDefault(e.target.value)}
                   className="w-full bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm text-white"
                 />
+                <datalist id="bulk-category-list">
+                  {uniqueCategories.map(c => (
+                    <option key={c} value={c} />
+                  ))}
+                </datalist>
               </div>
 
               <div>
@@ -1322,11 +1543,32 @@ export default function QuestionBankManager({ onNavigateTab } = {}) {
                   onChange={(e) => setBulkDifficultyDefault(e.target.value)}
                   className="w-full bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm text-white"
                 >
-                  <option value="easy">Easy</option>
-                  <option value="medium">Medium</option>
-                  <option value="hard">Hard</option>
+                  <option value="easy" className="bg-gray-900 text-white">Easy</option>
+                  <option value="medium" className="bg-gray-900 text-white">Medium</option>
+                  <option value="hard" className="bg-gray-900 text-white">Hard</option>
                 </select>
               </div>
+            </div>
+
+            <div className="mb-3">
+              <label className="block text-xs font-medium text-white/80 mb-1">Or Upload JSON / CSV File</label>
+              <input
+                type="file"
+                accept=".json,.csv,.txt"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = (ev) => {
+                    if (typeof ev.target?.result === 'string') {
+                      setBulkJsonText(ev.target.result);
+                      toast.success(`Loaded ${file.name}`);
+                    }
+                  };
+                  reader.readAsText(file);
+                }}
+                className="w-full text-xs text-white/80 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-orange-500/20 file:text-orange-300 hover:file:bg-orange-500/30 cursor-pointer"
+              />
             </div>
 
             <div className="mb-4">

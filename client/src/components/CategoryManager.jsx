@@ -44,7 +44,7 @@ const CategoryManager = () => {
   const loadCategories = async () => {
     setLoading(true);
     try {
-      const categoryList = await DynamicCategoryService.getAllCategories();
+      const categoryList = await DynamicCategoryService.loadCategories(true);
       setCategories(categoryList);
     } catch (error) {
       console.error('Error loading categories:', error);

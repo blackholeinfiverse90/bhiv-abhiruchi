@@ -38,11 +38,12 @@ export class DynamicQuestionCategoryService {
   /**
    * Load all active categories from database with robust fallback
    */
-  static async loadCategories() {
+  static async loadCategories(includeInactive = false) {
     try {
       // 1. Try loading from MERN Express API
       try {
-        const res = await ApiClient.get('/categories?type=question');
+        const query = includeInactive ? '/categories?type=question&include_inactive=true' : '/categories?type=question';
+        const res = await ApiClient.get(query);
         const list = res?.data || (Array.isArray(res) ? res : []);
         if (Array.isArray(list) && list.length > 0) {
           this.categories = list;
@@ -207,17 +208,24 @@ export class DynamicQuestionCategoryService {
   /**
    * Get categories with question counts for admin interface
    */
-  static async getCategoriesWithStats() {
+  static async getCategoriesWithStats(includeInactive = true) {
     try {
-      const { data, error } = await supabase
-        .rpc('get_active_question_categories');
-
-      if (error) throw error;
-
-      return data || [];
+      const [categories, qRes] = await Promise.all([
+        this.loadCategories(includeInactive),
+        ApiClient.get('/questions?limit=all').catch(() => ({ data: [] }))
+      ]);
+      const questions = qRes?.data || (Array.isArray(qRes) ? qRes : []);
+      const countMap = {};
+      questions.forEach((q) => {
+        const key = String(q.category || '').trim().toLowerCase();
+        if (key) countMap[key] = (countMap[key] || 0) + 1;
+      });
+      return categories.map(cat => ({
+        ...cat,
+        question_count: countMap[String(cat.name || '').trim().toLowerCase()] || countMap[String(cat.category_id || '').toLowerCase()] || 0
+      }));
     } catch (error) {
       console.error('Error getting categories with stats:', error);
-      // Fallback to basic categories without counts
       const categories = await this.getAllCategories();
       return categories.map(cat => ({
         ...cat,
@@ -261,9 +269,10 @@ export class DynamicQuestionCategoryService {
   /**
    * Refresh categories from database
    */
-  static async refresh() {
+  static async refresh(includeInactive = false) {
     this.initialized = false;
-    await this.initialize();
+    await this.loadCategories(includeInactive);
+    this.initialized = true;
   }
 
   /**

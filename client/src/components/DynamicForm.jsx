@@ -105,7 +105,7 @@ const TextField = ({ field, value, onChange, error }) => (
       onChange={onChange}
       required={field.required}
       placeholder={field.placeholder}
-      className={`w-full rounded-2xl bg-white/5 border border-white/20 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-orange-500/80 focus:ring-1 focus:ring-orange-500/60 transition-all ${
+      className={`w-full rounded-xl bg-slate-900/75 border border-white/15 px-4 py-3 text-sm text-white placeholder:text-white/35 focus:outline-none focus:border-orange-500/80 focus:ring-1 focus:ring-orange-500/60 transition-all ${
         error ? "border-red-400 focus:border-red-400 focus:ring-red-400/50" : ""
       }`}
       min={field.validation?.min}
@@ -130,7 +130,7 @@ const TextAreaField = ({ field, value, onChange, error }) => (
       onChange={onChange}
       required={field.required}
       placeholder={field.placeholder}
-      className={`w-full rounded-2xl bg-white/5 border border-white/20 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-orange-500/80 focus:ring-1 focus:ring-orange-500/60 transition-all min-h-[100px] ${
+      className={`w-full rounded-xl bg-slate-900/75 border border-white/15 px-4 py-3 text-sm text-white placeholder:text-white/35 focus:outline-none focus:border-orange-500/80 focus:ring-1 focus:ring-orange-500/60 transition-all min-h-[100px] ${
         error ? "border-red-400 focus:border-red-400 focus:ring-red-400/50" : ""
       }`}
       minLength={field.validation?.minLength}
@@ -151,7 +151,7 @@ const SelectField = ({ field, value, onChange, error }) => (
       value={value || ""}
       onChange={onChange}
       required={field.required}
-      className={`w-full rounded-2xl bg-white/5 border border-white/20 px-4 py-3 text-sm text-white focus:outline-none focus:border-orange-500/80 focus:ring-1 focus:ring-orange-500/60 transition-all ${
+      className={`w-full rounded-xl bg-slate-900/75 border border-white/15 px-4 py-3 text-sm text-white focus:outline-none focus:border-orange-500/80 focus:ring-1 focus:ring-orange-500/60 transition-all ${
         error ? "border-red-400 focus:border-red-400 focus:ring-red-400/50" : ""
       }`}
     >
@@ -196,10 +196,10 @@ const CardGridField = ({ field, value, onChange, error, options = null }) => {
         {displayOptions.map((option) => (
           <label
             key={option.value}
-            className={`relative flex flex-col items-center justify-center p-4 rounded-xl border-2 cursor-pointer transition-all duration-200 hover:scale-[1.02] min-h-[80px] text-center ${
+            className={`relative flex flex-col items-center justify-center p-4 rounded-xl border cursor-pointer transition-all duration-200 min-h-[80px] text-center ${
               value === option.value
-                ? "border-orange-400 bg-gradient-to-r from-orange-500/20 to-orange-600/20 text-white shadow-lg shadow-orange-500/20"
-                : "border-white/20 bg-white/5 text-white/80 hover:bg-white/10 hover:border-white/30"
+                ? "border-orange-500/80 bg-orange-500/15 text-white shadow-lg shadow-orange-500/10"
+                : "border-white/15 bg-slate-900/70 text-white/80 hover:bg-slate-900 hover:border-white/30"
             }`}
           >
             <input
@@ -256,10 +256,10 @@ const RadioField = ({ field, value, onChange, error }) => {
           return (
             <label
               key={option.value}
-              className={`flex items-center gap-4 px-5 py-3.5 rounded-2xl border cursor-pointer transition-all duration-200 ${
+              className={`flex items-center gap-4 px-4 sm:px-5 py-3.5 rounded-xl border cursor-pointer transition-all duration-200 ${
                 isChecked
-                  ? "border-orange-500/80 bg-gradient-to-r from-orange-500/20 via-orange-500/10 to-transparent text-white shadow-lg shadow-orange-500/10"
-                  : "border-white/15 bg-white/5 text-white/80 hover:bg-white/10 hover:border-white/30"
+                  ? "border-orange-500/80 bg-orange-500/15 text-white shadow-sm"
+                  : "border-white/15 bg-slate-900/70 text-white/80 hover:bg-slate-900 hover:border-white/30"
               }`}
             >
               <input
@@ -311,10 +311,10 @@ const CheckboxField = ({ field, value, onChange, error }) => {
           return (
             <label
               key={option.value}
-              className={`flex items-center gap-4 px-5 py-3.5 rounded-2xl border cursor-pointer transition-all duration-200 ${
+              className={`flex items-center gap-4 px-4 sm:px-5 py-3.5 rounded-xl border cursor-pointer transition-all duration-200 ${
                 isChecked
-                  ? "border-orange-500/80 bg-gradient-to-r from-orange-500/20 via-orange-500/10 to-transparent text-white shadow-lg shadow-orange-500/10"
-                  : "border-white/15 bg-white/5 text-white/80 hover:bg-white/10 hover:border-white/30"
+                  ? "border-orange-500/80 bg-orange-500/15 text-white shadow-sm"
+                  : "border-white/15 bg-slate-900/70 text-white/80 hover:bg-slate-900 hover:border-white/30"
               }`}
             >
               <input
@@ -371,17 +371,17 @@ const MultiSelectField = ({ field, value, onChange, error }) => {
           <div className="text-white/70 text-sm mb-3">{field.helpText}</div>
         )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pl-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {field.options?.map((option) => {
             const isChecked = Array.isArray(value) && value.includes(option.value);
 
             return (
               <label
                 key={option.value}
-                className={`flex items-center p-4 rounded-xl border cursor-pointer transition-all hover:scale-[1.01] ${
+                className={`flex items-center p-4 rounded-xl border cursor-pointer transition-all ${
                   isChecked
-                    ? "border-orange-400 bg-orange-500/20 text-white"
-                    : "border-white/20 bg-white/5 text-white/80 hover:bg-white/10 hover:border-white/30"
+                    ? "border-orange-500/80 bg-orange-500/15 text-white"
+                    : "border-white/15 bg-slate-900/70 text-white/80 hover:bg-slate-900 hover:border-white/30"
                 }`}
               >
                 <input
@@ -825,25 +825,25 @@ const DEFAULT_QUESTION_CATEGORIES = [
   ];
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-8">
+    <form onSubmit={handleSubmit} className="space-y-6">
       {orderedSections.map((sectionName) => {
         const sectionFields = fieldsBySection[sectionName].sort(
           (a, b) => (a.order || 0) - (b.order || 0)
         );
 
         return (
-          <div key={sectionName} className="space-y-6">
+          <div key={sectionName} className="rounded-2xl bg-slate-900/45 border border-white/10 p-5 sm:p-6 space-y-5">
             <SectionHeader section={sectionName} sections={config.sections} />
-            <div className="space-y-6">{sectionFields.map(renderField)}</div>
+            <div className="space-y-5">{sectionFields.map(renderField)}</div>
           </div>
         );
       })}
 
-      <div className="flex justify-end pt-6 border-t border-white/10">
+      <div className="flex justify-end pt-4 border-t border-white/10">
         <button
           type="submit"
           disabled={isLoading}
-          className="px-8 py-3.5 bg-gradient-to-r from-orange-500 via-orange-600 to-amber-600 hover:from-orange-600 hover:to-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm rounded-2xl transition-all duration-300 shadow-lg shadow-orange-500/25 hover:shadow-orange-500/40 hover:scale-[1.02] flex items-center justify-center gap-2"
+          className="px-7 py-3 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm rounded-xl transition-all duration-200 shadow-lg shadow-orange-500/25 flex items-center justify-center gap-2"
         >
           {isLoading ? (
             <>

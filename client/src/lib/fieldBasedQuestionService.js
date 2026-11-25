@@ -20,6 +20,113 @@ import ApiClient from "./apiClient.js";
 class FieldBasedQuestionService {
   constructor() {
     this.usedQuestions = new Set();
+    this.prewarmCacheKeys = new Map();
+  }
+
+  /**
+   * Build the shared student field + category target plan for both prewarm and assignment load
+   */
+  buildStudentPlan(studentData, totalQuestions = ASSIGNMENT_CONFIG.TOTAL_QUESTIONS) {
+    const studyField = detectStudyFieldFromBackground(studentData);
+    const levelTags = this.getStudentLevelTags(studentData);
+    const rawField =
+      studentData?.background_field_of_study ||
+      studentData?.responses?.field_of_study ||
+      studentData?.field_of_study;
+    const mappingFieldId = studyField === 'stem' ? 'stem' : (rawField || studyField);
+
+    const preferredCategoryRaw =
+      studentData?.responses?.question_category ||
+      studentData?.question_category ||
+      studentData?.responses?.preferred_category ||
+      studentData?.preferred_category ||
+      null;
+    const normalizedCat = normalizeCategoryName(preferredCategoryRaw);
+    const isAllCategories = normalizedCat === "all";
+    const strictCategory = !isAllCategories;
+
+    const questionWeights = getQuestionWeightsForField(studyField);
+    const categoryTargets = {};
+    if (strictCategory) {
+      categoryTargets[normalizedCat] = totalQuestions;
+    } else {
+      const sortedWeights = Object.entries(questionWeights).sort((a, b) => b[1] - a[1]);
+      const totalWeightSum = sortedWeights.reduce((sum, [, w]) => sum + w, 0) || 1;
+      let allocated = 0;
+
+      const unrounded = sortedWeights.map(([cat, w]) => {
+        const rawCount = (w / totalWeightSum) * totalQuestions;
+        const count = Math.floor(rawCount);
+        return { cat, count, remainder: rawCount - count };
+      });
+
+      unrounded.forEach((item) => {
+        categoryTargets[item.cat] = item.count;
+        allocated += item.count;
+      });
+
+      const remaining = totalQuestions - allocated;
+      if (remaining > 0) {
+        unrounded.sort((a, b) => b.remainder - a.remainder);
+        for (let i = 0; i < remaining; i++) {
+          const item = unrounded[i % unrounded.length];
+          categoryTargets[item.cat] = (categoryTargets[item.cat] || 0) + 1;
+        }
+      }
+
+      Object.keys(categoryTargets).forEach((k) => {
+        if (categoryTargets[k] <= 0) delete categoryTargets[k];
+      });
+    }
+
+    const studentFieldLabel =
+      studentData?.responses?.field_of_study ||
+      studentData?.background_field_of_study ||
+      studentData?.field_of_study ||
+      studyField ||
+      "STEM";
+    const eduLevel =
+      studentData?.responses?.education_level ||
+      studentData?.education_level ||
+      studentData?.responses?.grade ||
+      studentData?.grade ||
+      (levelTags[0] ? levelTags[0].replace("level_", "") : "");
+    const skills =
+      studentData?.responses?.skills ||
+      studentData?.skills ||
+      "";
+
+    return {
+      user_id: studentData?.user_id || studentData?.id || studentData?._id || "",
+      field_of_study: studentFieldLabel,
+      education_level: eduLevel,
+      skills: Array.isArray(skills) ? skills.join(", ") : String(skills || ""),
+      category_targets: categoryTargets,
+      total_questions: totalQuestions,
+      target_domains: mappingFieldId ? [mappingFieldId] : [],
+    };
+  }
+
+  /**
+   * Silently pre-generate MITRA questions in the background on Dashboard / Intake
+   */
+  async prewarmForStudent(studentData, totalQuestions = ASSIGNMENT_CONFIG.TOTAL_QUESTIONS) {
+    try {
+      if (!studentData) return;
+      const isAIEnabled = await aiSettingsService.isAIEnabled();
+      if (!isAIEnabled) return;
+
+      const plan = this.buildStudentPlan(studentData, totalQuestions);
+      const cacheKey = `${plan.user_id}::${plan.field_of_study}::${JSON.stringify(plan.category_targets)}`;
+      const lastPrewarmed = this.prewarmCacheKeys.get(cacheKey);
+      if (lastPrewarmed && Date.now() - lastPrewarmed < 60 * 1000) {
+        return;
+      }
+      this.prewarmCacheKeys.set(cacheKey, Date.now());
+      await ApiClient.post('/ai/prewarm-assessment', plan);
+    } catch (err) {
+      console.debug('Background MITRA prewarm skipped:', err?.message || err);
+    }
   }
 
   // Resolve a category input (id or name) to { categoryId, name }
@@ -47,6 +154,105 @@ class FieldBasedQuestionService {
   }
 
   /**
+   * Stream live AI-generated assessment questions via SSE with a strict 4.6s SLA
+   * so progress updates in real time per question and never hangs past 5 seconds.
+   */
+  async streamAIAssessment(payload, progressCallback = null) {
+    const controller = new AbortController();
+    const hardTimeout = setTimeout(() => controller.abort(), 4600);
+    const streamedQuestions = [];
+
+    try {
+      const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null;
+      const response = await fetch(`${ApiClient.getBaseUrl()}/ai/generate-assessment-stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error(`Stream endpoint returned HTTP ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      const handleBlock = (block) => {
+        const lines = block.split(/\r?\n/);
+        let eventName = "message";
+        const dataLines = [];
+        for (const line of lines) {
+          if (line.startsWith("event:")) {
+            eventName = line.slice(6).trim();
+          } else if (line.startsWith("data:")) {
+            dataLines.push(line.slice(5).trim());
+          }
+        }
+        if (dataLines.length === 0) return;
+
+        try {
+          const data = JSON.parse(dataLines.join("\n"));
+          if (eventName === "status") {
+            if (typeof progressCallback === "function" && data.message) {
+              progressCallback(data.message, Number(data.progress) || 35);
+            }
+          } else if (eventName === "question" && data.question) {
+            streamedQuestions.push(data.question);
+            if (typeof progressCallback === "function") {
+              progressCallback(
+                data.message || `Generated question ${streamedQuestions.length}...`,
+                Number(data.progress) || 50
+              );
+            }
+          } else if (eventName === "done") {
+            if (Array.isArray(data.questions) && data.questions.length > streamedQuestions.length) {
+              streamedQuestions.length = 0;
+              streamedQuestions.push(...data.questions);
+            }
+            console.log(
+              `✅ Streamed ${streamedQuestions.length} AI questions via [${data.provider_used}/${data.model_used}]`
+            );
+          }
+        } catch {
+          // Ignore malformed SSE event payload
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split(/\r?\n\r?\n/);
+        buffer = blocks.pop() || "";
+        for (const block of blocks) {
+          if (block.trim()) handleBlock(block);
+        }
+      }
+
+      if (buffer.trim()) {
+        handleBlock(buffer);
+      }
+
+      return streamedQuestions;
+    } catch (err) {
+      if (err.name === "AbortError") {
+        console.warn(`⏱️ Stream reached 4.6s SLA with ${streamedQuestions.length} AI questions; completing smoothly.`);
+      } else {
+        console.warn("AI assessment stream error:", err.message);
+      }
+      return streamedQuestions;
+    } finally {
+      clearTimeout(hardTimeout);
+    }
+  }
+
+  /**
    * Generate questions based on student's study field
    * @param {Object} studentData - Student's background information
    * @param {number} totalQuestions - Total number of questions to generate
@@ -54,7 +260,8 @@ class FieldBasedQuestionService {
    */
   async generateQuestionsForStudent(
     studentData,
-    totalQuestions = ASSIGNMENT_CONFIG.TOTAL_QUESTIONS
+    totalQuestions = ASSIGNMENT_CONFIG.TOTAL_QUESTIONS,
+    progressCallback = null
   ) {
     try {
       // Detect student's study field and grade/category preferences
@@ -195,134 +402,138 @@ class FieldBasedQuestionService {
 
       let combined = [];
 
-      // Iterate through each target category in the distribution
-      for (const [categoryName, categoryCount] of Object.entries(categoryTargets)) {
-        if (categoryCount <= 0) continue;
+      const studentFieldLabel =
+        studentData?.responses?.field_of_study ||
+        studentData?.background_field_of_study ||
+        studentData?.field_of_study ||
+        studyField ||
+        "STEM";
+      const eduLevel =
+        studentData?.responses?.education_level ||
+        studentData?.education_level ||
+        studentData?.responses?.grade ||
+        studentData?.grade ||
+        (levelTags[0] ? levelTags[0].replace("level_", "") : "");
+      const skillsRaw =
+        studentData?.responses?.skills ||
+        studentData?.skills ||
+        "";
+      const skillsText = Array.isArray(skillsRaw) ? skillsRaw.join(", ") : String(skillsRaw || "");
 
-        let categoryQuestions = [];
-        const diffCounts = splitByDifficulty(categoryCount);
-
-        // 1) Try DB fetch (admin/curated questions for this specific category)
-        for (const [diff, count] of Object.entries(diffCounts)) {
-          if (count <= 0) continue;
-          try {
-            let dbQs = await this.getFieldMappedQuestionsFromDatabase(
-              mappingFieldId,
-              categoryName,
-              diff,
-              count,
-              levelTags,
-              true
-            );
-            if (dbQs.length < count) {
-              const topUp = await this.getQuestionsFromDatabase(
-                categoryName,
-                diff,
-                count - dbQs.length,
-                levelTags,
-                true
-              );
-              dbQs = dbQs.concat(topUp);
-            }
-            dbQs.forEach((q) => {
-              const nt = normalizeText(q.question_text);
-              const qid = q.question_id || q.id;
-              if (!nt || usedQuestionTexts.has(nt) || (qid && usedQuestionIds.has(qid))) return;
-              usedQuestionTexts.add(nt);
-              if (qid) usedQuestionIds.add(qid);
-              categoryQuestions.push({
-                ...q,
-                category: categoryName,
-                difficulty: q.difficulty || diff,
-                type: "multiple_choice",
-                points: q.points ?? 10,
-                time_limit_seconds: q.time_limit_seconds ?? 180,
-              });
-            });
-          } catch (e) {
-            console.warn(`⚠️ Error fetching DB questions for ${categoryName} - ${diff}:`, e.message);
-          }
+      // 1) Fast Streaming AI Path (<= 5s SLA with real per-question progress)
+      if (isAIEnabled) {
+        if (typeof progressCallback === "function") {
+          progressCallback("Connecting to AI question stream...", 35);
         }
 
-        // 2) Generate with AI if enabled and category target is not yet satisfied
-        const neededForCat = categoryCount - categoryQuestions.length;
-        if (isAIEnabled && neededForCat > 0) {
-          const aiCounts = splitByDifficulty(neededForCat);
-          for (const [diff, count] of Object.entries(aiCounts)) {
-            if (count <= 0) continue;
-            try {
-              const isTechCategory =
-                categoryName.toLowerCase().includes("coding") ||
-                categoryName.toLowerCase().includes("technical") ||
-                categoryName.toLowerCase().includes("programming");
-              const aiCategoryLabel = isTechCategory
-                ? `${categoryName} (Field: ${mappingFieldId})`
-                : categoryName;
-              const aiQsRaw = await grokService.generateUniqueQuestions(
-                aiCategoryLabel,
-                diff,
-                count,
-                usedQuestionTexts
-              );
-              const aiQs = aiQsRaw.map((q) => ({
-                ...q,
-                category: categoryName,
-              }));
-              await this.storeGeneratedQuestions(
-                aiQs,
-                mappingFieldId,
-                categoryName,
-                diff
-              );
-              aiQs.forEach((q) => {
+        const streamedQuestions = await this.streamAIAssessment(
+          {
+            user_id: studentData?.user_id || studentData?.id || studentData?._id || "",
+            field_of_study: studentFieldLabel,
+            education_level: eduLevel,
+            skills: skillsText,
+            category_targets: categoryTargets,
+            total_questions: totalQuestions,
+            target_domains: mappingFieldId ? [mappingFieldId] : [],
+            mitra_budget_ms: 1100,
+          },
+          progressCallback
+        );
+
+        if (streamedQuestions.length > 0) {
+          streamedQuestions.forEach((q) => {
+            const nt = normalizeText(q.question_text);
+            const qid = q.question_id || q.id;
+            if (!nt || usedQuestionTexts.has(nt)) return;
+            usedQuestionTexts.add(nt);
+            if (qid) usedQuestionIds.add(qid);
+            combined.push({
+              ...q,
+              type: "multiple_choice",
+              points: q.points ?? 10,
+              time_limit_seconds: q.time_limit_seconds ?? 180,
+            });
+          });
+
+          // Store asynchronously in background without blocking assessment start
+          this.storeGeneratedQuestions(
+            combined,
+            mappingFieldId,
+            combined[0]?.category || studentFieldLabel,
+            "medium"
+          ).catch(() => {});
+        }
+      }
+
+      // 2) Fast DB + Curated Fallback only if AI is disabled or returned fewer than totalQuestions
+      if (combined.length < totalQuestions) {
+        if (typeof progressCallback === "function") {
+          progressCallback(
+            isAIEnabled
+              ? "Topping up remaining questions..."
+              : "Loading curated questions...",
+            Math.max(45, Math.min(85, 45 + Math.round((combined.length / totalQuestions) * 40)))
+          );
+        }
+
+        const categoryEntries = Object.entries(categoryTargets).filter(([, c]) => c > 0);
+        // Single fast DB fetch for fallback pool
+        try {
+          const qRes = await ApiClient.get('/questions');
+          const dbList = qRes?.data || qRes?.questions || (Array.isArray(qRes) ? qRes : []);
+          if (Array.isArray(dbList) && dbList.length > 0) {
+            const shuffledDb = this.shuffleArray(dbList);
+            for (const [catName, catCount] of categoryEntries) {
+              if (combined.length >= totalQuestions) break;
+              const existingInCat = combined.filter(
+                (q) => (q.category || '').toLowerCase() === catName.toLowerCase()
+              ).length;
+              let need = Math.max(0, catCount - existingInCat);
+              for (const q of shuffledDb) {
+                if (need <= 0 || combined.length >= totalQuestions) break;
+                if ((q.category || '').toLowerCase() !== catName.toLowerCase()) continue;
                 const nt = normalizeText(q.question_text);
-                if (!nt || usedQuestionTexts.has(nt)) return;
+                const qid = q.question_id || q.id;
+                if (!nt || usedQuestionTexts.has(nt) || (qid && usedQuestionIds.has(qid))) continue;
                 usedQuestionTexts.add(nt);
-                categoryQuestions.push({
+                if (qid) usedQuestionIds.add(qid);
+                combined.push({
                   ...q,
-                  category: categoryName,
-                  difficulty: q.difficulty || diff,
+                  category: catName,
                   type: "multiple_choice",
                   points: q.points ?? 10,
                   time_limit_seconds: q.time_limit_seconds ?? 180,
                 });
-              });
-            } catch (e) {
-              console.warn(
-                `⚠️ AI generation failed for ${categoryName} - ${diff}: ${e.message}.`
-              );
+                need--;
+              }
             }
           }
+        } catch (dbErr) {
+          console.warn('Fast DB fallback fetch failed:', dbErr.message);
         }
 
-        // 3) Curated question bank fallback for this specific category
-        const remainingForCat = categoryCount - categoryQuestions.length;
-        if (remainingForCat > 0) {
-          const bankCounts = splitByDifficulty(remainingForCat);
-          for (const [diff, count] of Object.entries(bankCounts)) {
-            if (count <= 0) continue;
-            try {
-              const fromBank = await this.getQuestionsForCategoryAndDifficulty(
-                categoryName,
-                diff,
-                count
-              );
-              fromBank.forEach((q) => {
-                const nt = normalizeText(q.question_text);
-                if (!nt || usedQuestionTexts.has(nt)) return;
-                usedQuestionTexts.add(nt);
-                categoryQuestions.push({
-                  ...q,
-                  category: categoryName,
-                });
-              });
-            } catch (e) {
-              console.warn(`⚠️ Curated bank fallback failed for ${categoryName} - ${diff}:`, e.message);
-            }
-          }
-        }
+        // Static curated bank fill for any still-unmet category targets
+        for (const [catName, catCount] of categoryEntries) {
+          if (combined.length >= totalQuestions) break;
+          const existingInCat = combined.filter(
+            (q) => (q.category || '').toLowerCase() === catName.toLowerCase()
+          ).length;
+          const need = Math.max(0, catCount - existingInCat);
+          if (need <= 0) continue;
 
-        combined.push(...categoryQuestions);
+          const bankQs = await this.getQuestionsForCategoryAndDifficulty(
+            catName,
+            DIFFICULTY_LEVELS.MEDIUM,
+            need
+          );
+          bankQs.forEach((q) => {
+            if (combined.length >= totalQuestions) return;
+            const nt = normalizeText(q.question_text);
+            if (!nt || usedQuestionTexts.has(nt)) return;
+            usedQuestionTexts.add(nt);
+            combined.push({ ...q, category: catName });
+          });
+        }
       }
 
       // If combined is still under totalQuestions, top up
@@ -740,12 +951,22 @@ class FieldBasedQuestionService {
         const qRes = await ApiClient.get('/questions');
         const list = qRes?.data || qRes?.questions || (Array.isArray(qRes) ? qRes : []);
         if (Array.isArray(list) && list.length > 0) {
-          pool = list.filter((q) => {
+          const baseList = excludeAI
+            ? list.filter((q) => q.created_by === 'admin' || !q.is_ai_generated)
+            : list;
+
+          pool = baseList.filter((q) => {
             const catMatch = !category || (q.category || '').toLowerCase() === category.toLowerCase();
             const diffMatch = !difficulty || (q.difficulty || '').toLowerCase() === difficulty.toLowerCase();
-            return (catMatch || !category) && (diffMatch || !difficulty);
+            return catMatch && diffMatch;
           });
-          if (pool.length === 0) pool = list; // Use all available questions if specific match is 0
+
+          // Relax difficulty while keeping category match if exact match is empty
+          if (pool.length === 0 && category) {
+            pool = baseList.filter(
+              (q) => (q.category || '').toLowerCase() === category.toLowerCase()
+            );
+          }
         }
       } catch (err) {
         console.warn('ApiClient /questions fetch failed, trying Supabase fallback:', err.message);
@@ -1009,17 +1230,19 @@ class FieldBasedQuestionService {
       const { name: resolvedCategoryName } = await this.resolveCategory(category);
       const payload = generatedQuestions.map((q, idx) => ({
         question_id: q.id || q.question_id || `q_ai_${Date.now()}_${idx}_${Math.random().toString(36).substr(2, 5)}`,
-        category: resolvedCategoryName || category || q.category || 'General',
-        difficulty: (difficulty || q.difficulty || 'medium').toLowerCase(),
+        category: q.category || resolvedCategoryName || category || 'General',
+        difficulty: (q.difficulty || difficulty || 'medium').toLowerCase(),
         question_text: q.question_text || q.text || '',
         options: Array.isArray(q.options) ? q.options : [],
         correct_answer: q.correct_answer || q.correctAnswer || (Array.isArray(q.options) ? q.options[0] : ''),
         explanation: q.explanation || '',
         vedic_connection: q.vedic_connection || '',
         modern_application: q.modern_application || '',
-        target_domains: fieldId ? [fieldId] : [],
+        target_domains: Array.isArray(q.target_domains) && q.target_domains.length > 0
+          ? q.target_domains
+          : (fieldId ? [fieldId] : []),
         is_ai_generated: true,
-        created_by: 'grok_ai'
+        created_by: q.created_by || 'uniguru_mitra'
       }));
 
       await ApiClient.post('/questions', payload);

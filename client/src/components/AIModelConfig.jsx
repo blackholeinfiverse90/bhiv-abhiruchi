@@ -1,34 +1,32 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Bot, Sparkles, Cpu, Zap, CheckCircle2, AlertCircle, Save, 
-  RefreshCw, Sliders, BookOpen, Layers, Plus, Trash2, Eye, EyeOff
+import {
+  Bot, Sparkles, Zap, CheckCircle2, AlertCircle, Save,
+  RefreshCw, ShieldCheck, Trash2
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import ApiClient from '../lib/apiClient';
 
 export default function AIModelConfig() {
-  // Model Settings State
-  const [provider, setProvider] = useState('uniguru_mitra');
-  const [endpoint, setEndpoint] = useState('https://api.uniguru.ai/v1/chat/completions');
-  const [apiKey, setApiKey] = useState('');
-  const [model, setModel] = useState('uniguru-mitra-v1');
   const [aiEnabled, setAiEnabled] = useState(true);
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [isSavingSettings, setIsSavingSettings] = useState(false);
-  
-  // Connection Test State
-  const [isTesting, setIsTesting] = useState(false);
-  const [testResult, setTestResult] = useState(null);
+  const [isToggling, setIsToggling] = useState(false);
+
+  // Automatic Live Status State
+  const [isCheckingStatus, setIsCheckingStatus] = useState(true);
+  const [statusInfo, setStatusInfo] = useState(null);
 
   // Field of Study Question Generator State
   const [fields, setFields] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [selectedCategory, setSelectedCategory] = useState('');
   const [selectedField, setSelectedField] = useState('Computer Science & Engineering');
   const [customField, setCustomField] = useState('');
   const [difficulty, setDifficulty] = useState('medium');
   const [questionCount, setQuestionCount] = useState(5);
   const [topics, setTopics] = useState('');
+  const [autoSaveToBank, setAutoSaveToBank] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedQuestions, setGeneratedQuestions] = useState([]);
+  const [generationMeta, setGenerationMeta] = useState(null);
   const [isSavingQuestions, setIsSavingQuestions] = useState(false);
 
   const defaultFields = [
@@ -45,27 +43,81 @@ export default function AIModelConfig() {
   ];
 
   useEffect(() => {
-    loadSettings();
+    initializeAIView();
     loadFields();
+    loadCategories();
   }, []);
 
-  async function loadSettings() {
+  async function initializeAIView() {
     try {
       const res = await ApiClient.get('/ai/settings');
       if (res && res.success && res.data) {
-        const d = res.data;
-        setAiEnabled(d.enabled !== false);
-        setProvider(d.provider || 'uniguru_mitra');
-        setModel(d.model || d.metadata?.uniguru_model || 'uniguru-mitra-v1');
-        if (d.metadata?.uniguru_endpoint) {
-          setEndpoint(d.metadata.uniguru_endpoint);
+        setAiEnabled(res.data.enabled !== false);
+      }
+    } catch {
+      // Continue with default enabled state
+    }
+    await checkLiveStatus(false);
+  }
+
+  async function checkLiveStatus(showToast = true) {
+    setIsCheckingStatus(true);
+    try {
+      const res = await ApiClient.post('/ai/test-connection', {});
+      if (res && res.success) {
+        const isMitra = res.provider_used === 'mitra';
+        setStatusInfo({
+          status: isMitra ? 'mitra' : 'fallback',
+          provider: res.provider_used || 'mitra',
+          model: res.model_used || 'mitra-companion',
+          message: isMitra
+            ? 'MITRA AI is live and connected automatically.'
+            : `MITRA temporarily unavailable — automatic Groq fallback active (${res.model_used}).`
+        });
+        if (showToast) {
+          toast.success(isMitra ? 'MITRA AI is connected!' : 'Automatic Groq fallback is active');
         }
-        if (d.metadata?.uniguru_api_key) {
-          setApiKey(d.metadata.uniguru_api_key);
-        }
+      } else {
+        setStatusInfo({
+          status: 'error',
+          message: res?.error || 'AI engines unavailable'
+        });
+        if (showToast) toast.error('AI connection check failed');
       }
     } catch (err) {
-      console.warn('Could not load AI settings:', err.message);
+      setStatusInfo({
+        status: 'error',
+        message: err.message || 'Could not reach backend AI service'
+      });
+      if (showToast) toast.error('Status check failed: ' + (err.message || ''));
+    } finally {
+      setIsCheckingStatus(false);
+    }
+  }
+
+  async function handleToggleEnabled(nextEnabled) {
+    setIsToggling(true);
+    setAiEnabled(nextEnabled);
+    try {
+      await ApiClient.put('/ai/settings', { enabled: nextEnabled });
+      toast.success(`MITRA AI ${nextEnabled ? 'enabled' : 'disabled'} for student assessments`);
+    } catch (err) {
+      setAiEnabled(!nextEnabled);
+      toast.error('Failed to update AI toggle: ' + (err.message || ''));
+    } finally {
+      setIsToggling(false);
+    }
+  }
+
+  async function loadCategories() {
+    try {
+      const res = await ApiClient.get('/categories?type=question');
+      const list = res?.data || (Array.isArray(res) ? res : []);
+      if (Array.isArray(list)) {
+        setCategories(list.map(c => c.name).filter(Boolean));
+      }
+    } catch {
+      // Ignore optional category load errors
     }
   }
 
@@ -84,69 +136,6 @@ export default function AIModelConfig() {
     }
   }
 
-  async function handleSaveSettings() {
-    setIsSavingSettings(true);
-    try {
-      await ApiClient.put('/ai/settings', {
-        enabled: aiEnabled,
-        provider,
-        model,
-        metadata: {
-          uniguru_endpoint: endpoint,
-          uniguru_api_key: apiKey,
-          uniguru_model: model,
-          last_updated: new Date().toISOString()
-        }
-      });
-      toast.success('AI configuration saved successfully');
-    } catch (err) {
-      toast.error('Failed to save settings: ' + (err.message || ''));
-    } finally {
-      setIsSavingSettings(false);
-    }
-  }
-
-  async function handleTestConnection() {
-    setIsTesting(true);
-    setTestResult(null);
-    try {
-      // First save active settings so backend uses current values
-      await ApiClient.put('/ai/settings', {
-        enabled: aiEnabled,
-        provider,
-        model,
-        metadata: {
-          uniguru_endpoint: endpoint,
-          uniguru_api_key: apiKey,
-          uniguru_model: model
-        }
-      });
-
-      const res = await ApiClient.post('/ai/test-connection', {});
-      if (res && res.success) {
-        setTestResult({
-          status: 'success',
-          message: res.message || 'Model verified and active.'
-        });
-        toast.success('Connection verified!');
-      } else {
-        setTestResult({
-          status: 'error',
-          message: res.error || 'Connection failed'
-        });
-        toast.error('Connection failed');
-      }
-    } catch (err) {
-      setTestResult({
-        status: 'error',
-        message: err.message || 'Connection failed'
-      });
-      toast.error('Connection error: ' + (err.message || ''));
-    } finally {
-      setIsTesting(false);
-    }
-  }
-
   async function handleGenerateQuestions() {
     const activeField = customField.trim() || selectedField;
     if (!activeField) {
@@ -155,7 +144,7 @@ export default function AIModelConfig() {
     }
 
     setIsGenerating(true);
-    const toastId = toast.loading(`Generating questions for ${activeField} via ${provider === 'uniguru_mitra' ? 'Uniguru / Mitra' : 'Groq'}...`);
+    const toastId = toast.loading(`Generating ${questionCount} questions for ${activeField} via MITRA...`);
     try {
       const parsedTopics = topics
         .split(',')
@@ -164,14 +153,27 @@ export default function AIModelConfig() {
 
       const res = await ApiClient.post('/ai/generate-questions', {
         field_of_study: activeField,
+        category: selectedCategory || activeField,
         difficulty,
         count: Number(questionCount),
-        topics: parsedTopics
+        topics: parsedTopics,
+        saveToBank: autoSaveToBank
       });
 
       if (res && res.success && Array.isArray(res.data) && res.data.length > 0) {
         setGeneratedQuestions(res.data);
-        toast.success(`Generated ${res.data.length} questions tailored to ${activeField}!`, { id: toastId });
+        setGenerationMeta({
+          provider: res.provider_used,
+          model: res.model_used,
+          field: activeField,
+          savedToBank: Boolean(res.saved_to_bank)
+        });
+        toast.success(
+          res.saved_to_bank
+            ? `Generated & auto-saved ${res.data.length} questions to Question Bank!`
+            : `Generated ${res.data.length} questions tailored to ${activeField}!`,
+          { id: toastId }
+        );
       } else {
         throw new Error(res?.error || 'No questions returned');
       }
@@ -188,28 +190,29 @@ export default function AIModelConfig() {
     setIsSavingQuestions(true);
     const toastId = toast.loading(`Saving ${generatedQuestions.length} questions to MongoDB...`);
     try {
-      let savedCount = 0;
-      for (const q of generatedQuestions) {
-        await ApiClient.post('/questions', {
-          question_id: q.question_id || `q_${Date.now()}_${savedCount}`,
-          category: q.category || selectedField,
-          difficulty: q.difficulty || difficulty,
-          question_text: q.question_text,
-          options: q.options,
-          correct_answer: q.correct_answer,
-          explanation: q.explanation || '',
-          vedic_connection: q.vedic_connection || '',
-          modern_application: q.modern_application || '',
-          target_domains: q.target_domains || [selectedField.toLowerCase().replace(/[^a-z0-9]/g, '_')],
-          is_active: true,
-          created_by: 'uniguru_mitra'
-        });
-        savedCount++;
-      }
-      toast.success(`Successfully saved ${savedCount} questions into Question Bank!`, { id: toastId });
+      const activeField = customField.trim() || selectedField;
+      const payload = generatedQuestions.map((q, idx) => ({
+        question_id: q.question_id || `q_${Date.now()}_${idx}`,
+        category: selectedCategory || q.category || activeField,
+        difficulty: q.difficulty || difficulty,
+        question_text: q.question_text,
+        options: q.options,
+        correct_answer: q.correct_answer,
+        explanation: q.explanation || '',
+        vedic_connection: q.vedic_connection || '',
+        modern_application: q.modern_application || '',
+        target_domains: q.target_domains || [activeField.toLowerCase().replace(/[^a-z0-9]/g, '_')],
+        is_active: true,
+        is_ai_generated: true,
+        created_by: q.created_by || 'mitra'
+      }));
+      const res = await ApiClient.post('/questions', payload);
+      const savedCount = res?.count || payload.length;
+      toast.success(`Saved ${savedCount} questions into Question Bank!`, { id: toastId });
       setGeneratedQuestions([]);
+      setGenerationMeta(null);
     } catch (err) {
-      toast.error('Failed to save some questions: ' + (err.message || ''), { id: toastId });
+      toast.error('Failed to save questions: ' + (err.message || ''), { id: toastId });
     } finally {
       setIsSavingQuestions(false);
     }
@@ -222,7 +225,7 @@ export default function AIModelConfig() {
   return (
     <div className="space-y-8 text-white">
       {/* Header Banner */}
-      <div className="relative overflow-hidden rounded-2xl border border-orange-500/30 bg-gradient-to-r from-orange-950/40 via-amber-950/20 to-black/40 p-6 backdrop-blur-md">
+      <div className="relative overflow-hidden rounded-2xl border border-orange-500/30 bg-slate-950/75 bg-gradient-to-r from-orange-950/50 via-amber-950/25 to-slate-950/80 p-6 backdrop-blur-xl shadow-xl">
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="p-3 rounded-xl bg-orange-500/20 border border-orange-500/40 text-orange-400">
@@ -230,193 +233,98 @@ export default function AIModelConfig() {
             </div>
             <div>
               <h2 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-                Uniguru / Mitra AI Integration
+                MITRA AI
                 <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-orange-500/20 text-orange-300 border border-orange-500/30">
-                  Curriculum Engine
+                  Automated Curriculum Engine
                 </span>
               </h2>
               <p className="text-sm text-white/70 mt-0.5">
-                Link organization language models (Uniguru/Mitra) to generate and evaluate questions strictly aligned with each student's field of study.
+                Fully automated MITRA integration for field-of-study questions, response evaluation, and student feedback (with seamless Groq fallback if unavailable).
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleSaveSettings}
-              disabled={isSavingSettings}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-medium text-sm transition-all shadow-lg shadow-orange-500/20 disabled:opacity-50"
-            >
-              <Save className="w-4 h-4" />
-              {isSavingSettings ? 'Saving...' : 'Save Configuration'}
-            </button>
-          </div>
+          <label className="flex items-center gap-2.5 px-4 py-2 rounded-xl border border-white/15 bg-black/30 cursor-pointer text-sm">
+            <span className="text-white/80 font-medium">
+              AI Questions: {aiEnabled ? 'Enabled' : 'Disabled'}
+            </span>
+            <input
+              type="checkbox"
+              disabled={isToggling}
+              checked={aiEnabled}
+              onChange={(e) => handleToggleEnabled(e.target.checked)}
+              className="w-4 h-4 accent-orange-500 rounded"
+            />
+          </label>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column: Model Configuration */}
-        <div className="lg:col-span-1 rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-md space-y-6">
-          <div className="flex items-center justify-between border-b border-white/10 pb-4">
+        {/* Left Column: Automated MITRA Engine Status */}
+        <div className="lg:col-span-1 rounded-2xl border border-white/15 bg-slate-950/65 p-6 backdrop-blur-xl space-y-5 h-fit shadow-xl">
+          <div className="flex items-center justify-between border-b border-white/10 pb-3">
             <div className="flex items-center gap-2 text-white font-semibold">
-              <Sliders className="w-5 h-5 text-orange-400" />
-              <span>Model Provider</span>
+              <ShieldCheck className="w-5 h-5 text-orange-400" />
+              <span>Active Engine</span>
             </div>
-            <label className="flex items-center gap-2 cursor-pointer text-xs">
-              <span className="text-white/70">{aiEnabled ? 'Enabled' : 'Disabled'}</span>
-              <input
-                type="checkbox"
-                checked={aiEnabled}
-                onChange={(e) => setAiEnabled(e.target.checked)}
-                className="w-4 h-4 accent-orange-500 rounded"
-              />
-            </label>
+            <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-medium">
+              Zero-Config Auto
+            </span>
           </div>
 
-          {/* Provider Selection */}
+          <div className="p-4 rounded-xl border border-orange-500/40 bg-orange-500/10 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-orange-400" />
+                <span className="font-bold text-white text-base">MITRA</span>
+              </div>
+              <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-black/40 text-orange-200 border border-orange-500/20">
+                mitra-companion
+              </span>
+            </div>
+            <p className="text-xs text-white/70 leading-relaxed">
+              Primary AI model connected automatically with JWT guest authentication. Automatically falls back to Groq LLM if MITRA is unreachable.
+            </p>
+          </div>
+
+          {/* Live Health Indicator */}
           <div className="space-y-3">
-            <label className="block text-xs uppercase tracking-wider text-white/60 font-medium">
-              Active Provider
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setProvider('uniguru_mitra')}
-                className={`p-3 rounded-xl border text-left transition-all ${
-                  provider === 'uniguru_mitra'
-                    ? 'border-orange-500 bg-orange-500/15 text-white font-semibold ring-1 ring-orange-500'
-                    : 'border-white/10 bg-white/5 text-white/70 hover:border-white/20'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-orange-400" />
-                  <span className="text-sm">Uniguru / Mitra</span>
-                </div>
-                <p className="text-[11px] text-white/50 mt-1">Dedicated org model</p>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setProvider('groq')}
-                className={`p-3 rounded-xl border text-left transition-all ${
-                  provider === 'groq'
-                    ? 'border-orange-500 bg-orange-500/15 text-white font-semibold ring-1 ring-orange-500'
-                    : 'border-white/10 bg-white/5 text-white/70 hover:border-white/20'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <Cpu className="w-4 h-4 text-amber-400" />
-                  <span className="text-sm">Groq LLM</span>
-                </div>
-                <p className="text-[11px] text-white/50 mt-1">High-speed fallback</p>
-              </button>
-            </div>
-          </div>
-
-          {/* Uniguru / Mitra Settings */}
-          {provider === 'uniguru_mitra' && (
-            <div className="space-y-4 pt-2">
-              <div>
-                <label className="block text-xs text-white/70 mb-1 font-medium">
-                  Uniguru / Mitra API Endpoint
-                </label>
-                <input
-                  type="text"
-                  value={endpoint}
-                  onChange={(e) => setEndpoint(e.target.value)}
-                  placeholder="https://api.uniguru.ai/v1/chat/completions"
-                  className="w-full px-3 py-2 text-sm rounded-xl bg-black/40 border border-white/15 text-white focus:outline-none focus:border-orange-500"
-                />
-                <p className="text-[11px] text-white/40 mt-1">
-                  Custom gateway or internal LLM host
-                </p>
+            {isCheckingStatus ? (
+              <div className="p-3 rounded-xl border border-white/10 bg-black/30 text-xs text-white/70 flex items-center gap-2">
+                <RefreshCw className="w-4 h-4 animate-spin text-orange-400" />
+                <span>Checking live MITRA connectivity...</span>
               </div>
-
-              <div>
-                <label className="block text-xs text-white/70 mb-1 font-medium">
-                  API Key / Auth Token (Optional if internal)
-                </label>
-                <div className="relative">
-                  <input
-                    type={showApiKey ? 'text' : 'password'}
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="mitra-sk-..."
-                    className="w-full px-3 py-2 pr-10 text-sm rounded-xl bg-black/40 border border-white/15 text-white focus:outline-none focus:border-orange-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowApiKey(!showApiKey)}
-                    className="absolute right-2.5 top-2.5 text-white/40 hover:text-white"
-                  >
-                    {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs text-white/70 mb-1 font-medium">
-                  Model Identifier
-                </label>
-                <input
-                  type="text"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder="uniguru-mitra-v1"
-                  className="w-full px-3 py-2 text-sm rounded-xl bg-black/40 border border-white/15 text-white focus:outline-none focus:border-orange-500"
-                />
-              </div>
-            </div>
-          )}
-
-          {provider === 'groq' && (
-            <div className="space-y-4 pt-2">
-              <div>
-                <label className="block text-xs text-white/70 mb-1 font-medium">
-                  Groq Model Identifier
-                </label>
-                <input
-                  type="text"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder="llama-3.3-70b-versatile"
-                  className="w-full px-3 py-2 text-sm rounded-xl bg-black/40 border border-white/15 text-white focus:outline-none focus:border-orange-500"
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Test Connection Button */}
-          <div className="pt-2 border-t border-white/10">
-            <button
-              onClick={handleTestConnection}
-              disabled={isTesting}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-white/20 bg-white/10 hover:bg-white/15 text-white text-sm font-medium transition-all disabled:opacity-50"
-            >
-              <Zap className={`w-4 h-4 text-orange-400 ${isTesting ? 'animate-bounce' : ''}`} />
-              {isTesting ? 'Testing Connectivity...' : 'Test Connection'}
-            </button>
-
-            {testResult && (
-              <div className={`mt-3 p-3 rounded-xl border text-xs flex items-start gap-2 ${
-                testResult.status === 'success' 
+            ) : statusInfo && (
+              <div className={`p-3 rounded-xl border text-xs flex items-start gap-2 ${
+                statusInfo.status === 'mitra'
                   ? 'border-green-500/30 bg-green-500/10 text-green-300'
+                  : statusInfo.status === 'fallback'
+                  ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
                   : 'border-red-500/30 bg-red-500/10 text-red-300'
               }`}>
-                {testResult.status === 'success' ? (
-                  <CheckCircle2 className="w-4 h-4 shrink-0 text-green-400 mt-0.5" />
-                ) : (
+                {statusInfo.status === 'error' ? (
                   <AlertCircle className="w-4 h-4 shrink-0 text-red-400 mt-0.5" />
+                ) : (
+                  <CheckCircle2 className="w-4 h-4 shrink-0 text-green-400 mt-0.5" />
                 )}
-                <span>{testResult.message}</span>
+                <span>{statusInfo.message}</span>
               </div>
             )}
+
+            <button
+              type="button"
+              onClick={() => checkLiveStatus(true)}
+              disabled={isCheckingStatus}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-white/20 bg-white/10 hover:bg-white/15 text-white text-sm font-medium transition-all disabled:opacity-50"
+            >
+              <Zap className={`w-4 h-4 text-orange-400 ${isCheckingStatus ? 'animate-pulse' : ''}`} />
+              {isCheckingStatus ? 'Checking...' : 'Check Live Status'}
+            </button>
           </div>
         </div>
 
         {/* Right Columns: Field of Study Generator & Preview */}
         <div className="lg:col-span-2 space-y-6">
-          {/* Question Generation Form */}
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-md space-y-4">
+          <div className="rounded-2xl border border-white/15 bg-slate-950/65 p-6 backdrop-blur-xl space-y-4 shadow-xl">
             <div className="flex items-center gap-2 border-b border-white/10 pb-3 text-white font-semibold">
               <Sparkles className="w-5 h-5 text-orange-400" />
               <span>Ask Curriculum-Aligned Questions by Field of Study</span>
@@ -491,6 +399,24 @@ export default function AIModelConfig() {
 
               <div>
                 <label className="block text-xs text-white/70 mb-1 font-medium">
+                  Target Question Category (Optional)
+                </label>
+                <select
+                  value={selectedCategory}
+                  onChange={(e) => setSelectedCategory(e.target.value)}
+                  className="w-full px-3 py-2 text-sm rounded-xl bg-black/40 border border-white/15 text-white focus:outline-none focus:border-orange-500"
+                >
+                  <option value="" className="bg-neutral-900 text-white">Auto (Match Field of Study)</option>
+                  {categories.map(c => (
+                    <option key={c} value={c} className="bg-neutral-900 text-white">
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="md:col-span-2">
+                <label className="block text-xs text-white/70 mb-1 font-medium">
                   Specific Topics / Keywords (Optional)
                 </label>
                 <input
@@ -503,45 +429,68 @@ export default function AIModelConfig() {
               </div>
             </div>
 
-            <div className="pt-2 flex justify-end">
+            <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <label className="flex items-center gap-2 text-xs text-white/80 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoSaveToBank}
+                  onChange={(e) => setAutoSaveToBank(e.target.checked)}
+                  className="w-4 h-4 accent-orange-500 rounded"
+                />
+                Auto-save generated questions to Question Bank
+              </label>
               <button
                 onClick={handleGenerateQuestions}
                 disabled={isGenerating}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white font-medium text-sm transition-all shadow-lg shadow-orange-500/25 disabled:opacity-50"
+                className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white font-medium text-sm transition-all shadow-lg shadow-orange-500/25 disabled:opacity-50"
               >
                 <Sparkles className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} />
-                {isGenerating ? 'Generating Questions...' : 'Generate Questions with Uniguru/Mitra'}
+                {isGenerating ? 'Generating with MITRA...' : 'Generate Questions with MITRA'}
               </button>
             </div>
           </div>
 
-          {/* Generated Questions List / Preview */}
+          {/* Generated Questions Preview */}
           {generatedQuestions.length > 0 && (
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-md space-y-4">
+            <div className="rounded-2xl border border-white/15 bg-slate-950/65 p-6 backdrop-blur-xl space-y-4 shadow-xl">
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-white/10 pb-4">
                 <div>
-                  <h3 className="font-semibold text-white text-base">
+                  <h3 className="font-semibold text-white text-base flex items-center gap-2 flex-wrap">
                     Generated Questions ({generatedQuestions.length})
+                    {generationMeta?.provider && (
+                      <span className="text-xs font-normal px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-300 border border-orange-500/30">
+                        {generationMeta.provider === 'mitra' ? 'MITRA' : `Fallback: ${generationMeta.provider}`} · {generationMeta.model}
+                      </span>
+                    )}
+                    {generationMeta?.savedToBank && (
+                      <span className="text-xs font-normal px-2 py-0.5 rounded-full bg-green-500/20 text-green-300 border border-green-500/30">
+                        ✓ Auto-Saved to Bank
+                      </span>
+                    )}
                   </h3>
                   <p className="text-xs text-white/60">
-                    Review and commit directly to the live MongoDB Question Bank
+                    {generationMeta?.savedToBank
+                      ? 'Already saved to MongoDB Question Bank.'
+                      : 'Review and commit directly to the live MongoDB Question Bank'}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => setGeneratedQuestions([])}
+                    onClick={() => { setGeneratedQuestions([]); setGenerationMeta(null); }}
                     className="px-3 py-1.5 rounded-lg border border-white/15 text-white/70 hover:text-white text-xs"
                   >
                     Clear
                   </button>
-                  <button
-                    onClick={handleSaveAllQuestions}
-                    disabled={isSavingQuestions}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-green-500 hover:bg-green-600 text-white font-medium text-xs transition-all shadow-md shadow-green-500/20 disabled:opacity-50"
-                  >
-                    <Save className="w-3.5 h-3.5" />
-                    {isSavingQuestions ? 'Saving...' : 'Import All to Question Bank'}
-                  </button>
+                  {!generationMeta?.savedToBank && (
+                    <button
+                      onClick={handleSaveAllQuestions}
+                      disabled={isSavingQuestions}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-green-500 hover:bg-green-600 text-white font-medium text-xs transition-all shadow-md shadow-green-500/20 disabled:opacity-50"
+                    >
+                      <Save className="w-3.5 h-3.5" />
+                      {isSavingQuestions ? 'Saving...' : 'Import All to Question Bank'}
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -570,7 +519,7 @@ export default function AIModelConfig() {
                       <button
                         onClick={() => handleRemoveQuestion(idx)}
                         className="text-white/40 hover:text-red-400 p-1 transition-colors"
-                        title="Remove question"
+                        title="Remove from preview"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -580,7 +529,6 @@ export default function AIModelConfig() {
                       {q.question_text}
                     </p>
 
-                    {/* Options */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
                       {q.options?.map((opt, oIdx) => {
                         const isCorrect = opt === q.correct_answer || opt.startsWith(q.correct_answer);
@@ -599,21 +547,22 @@ export default function AIModelConfig() {
                       })}
                     </div>
 
-                    {/* Vedic connection & Modern application */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-white/10 text-[11px]">
-                      {q.vedic_connection && (
-                        <div className="p-2 rounded bg-amber-500/10 border border-amber-500/20 text-amber-200">
-                          <span className="font-semibold block mb-0.5">Vedic Connection:</span>
-                          {q.vedic_connection}
-                        </div>
-                      )}
-                      {q.modern_application && (
-                        <div className="p-2 rounded bg-blue-500/10 border border-blue-500/20 text-blue-200">
-                          <span className="font-semibold block mb-0.5">Modern Industry Application:</span>
-                          {q.modern_application}
-                        </div>
-                      )}
-                    </div>
+                    {(q.vedic_connection || q.modern_application) && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-white/10 text-[11px]">
+                        {q.vedic_connection && (
+                          <div className="p-2 rounded bg-amber-500/10 border border-amber-500/20 text-amber-200">
+                            <span className="font-semibold block mb-0.5">Vedic Connection:</span>
+                            {q.vedic_connection}
+                          </div>
+                        )}
+                        {q.modern_application && (
+                          <div className="p-2 rounded bg-blue-500/10 border border-blue-500/20 text-blue-200">
+                            <span className="font-semibold block mb-0.5">Modern Industry Application:</span>
+                            {q.modern_application}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

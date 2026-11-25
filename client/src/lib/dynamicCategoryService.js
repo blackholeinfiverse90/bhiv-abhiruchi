@@ -1,8 +1,9 @@
 import { supabase } from './supabaseClient';
+import ApiClient from './apiClient';
 
 /**
  * Dynamic Category Service - Manages form categories/sections dynamically from database
- * Similar to DynamicFieldService but for form organization and sections
+ * Uses MERN API (/api/categories?type=form) with safe fallback
  */
 export class DynamicCategoryService {
   static instance = null;
@@ -37,19 +38,35 @@ export class DynamicCategoryService {
   /**
    * Load all active categories from database
    */
-  static async loadCategories() {
-    const { data, error } = await supabase
+  static async loadCategories(includeInactive = false) {
+    try {
+      const endpoint = includeInactive
+        ? '/categories?type=form&include_inactive=true'
+        : '/categories?type=form';
+      const res = await ApiClient.get(endpoint);
+      const list = res?.data || (Array.isArray(res) ? res : []);
+      if (Array.isArray(list) && list.length > 0) {
+        this.categories = list;
+        this.buildCategoryMap();
+        return this.categories;
+      }
+    } catch (apiErr) {
+      console.warn('ApiClient /categories?type=form failed, trying fallback:', apiErr.message);
+    }
+
+    const { data } = await supabase
       .from('form_categories')
       .select('*')
       .eq('is_active', true)
       .order('display_order', { ascending: true });
 
-    if (error) throw error;
+    if (data && data.length > 0) {
+      this.categories = data;
+      this.buildCategoryMap();
+      return this.categories;
+    }
 
-    this.categories = data || [];
-    this.buildCategoryMap();
-    
-    console.log(`Loaded ${this.categories.length} dynamic form categories`);
+    this.initializeFallbackCategories();
     return this.categories;
   }
 
@@ -274,58 +291,79 @@ export class DynamicCategoryService {
   /**
    * Refresh categories from database
    */
-  static async refresh() {
+  static async refresh(includeInactive = false) {
     this.initialized = false;
-    await this.initialize();
+    await this.loadCategories(includeInactive);
+    this.initialized = true;
   }
 
   /**
    * Add a new category (admin function)
    */
   static async addCategory(categoryData) {
-    const { data, error } = await supabase
-      .from('form_categories')
-      .insert([{
+    try {
+      const res = await ApiClient.post('/categories', {
         category_id: categoryData.category_id,
         name: categoryData.name,
         description: categoryData.description,
-        icon: categoryData.icon,
+        icon: categoryData.icon || 'Settings',
         color: categoryData.color,
         display_order: categoryData.display_order || 0,
-        is_active: true,
+        type: 'form',
         is_system: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      }])
-      .select()
-      .single();
+        is_active: true
+      });
+      await this.refresh(true);
+      return res?.data || res;
+    } catch (apiErr) {
+      console.warn('ApiClient addCategory (form) failed, trying fallback:', apiErr.message);
+      const { data, error } = await supabase
+        .from('form_categories')
+        .insert([{
+          category_id: categoryData.category_id,
+          name: categoryData.name,
+          description: categoryData.description,
+          icon: categoryData.icon,
+          color: categoryData.color,
+          display_order: categoryData.display_order || 0,
+          is_active: true,
+          is_system: false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }])
+        .select()
+        .single();
 
-    if (error) throw error;
-
-    // Refresh local cache
-    await this.refresh();
-    return data;
+      if (error) throw error;
+      await this.refresh(true);
+      return data;
+    }
   }
 
   /**
    * Update a category (admin function)
    */
   static async updateCategory(categoryId, updates) {
-    const { data, error } = await supabase
-      .from('form_categories')
-      .update({
-        ...updates,
-        updated_at: new Date().toISOString()
-      })
-      .eq('category_id', categoryId)
-      .select()
-      .single();
+    try {
+      const res = await ApiClient.put(`/categories/${categoryId}`, updates);
+      await this.refresh(true);
+      return res?.data || res;
+    } catch (apiErr) {
+      console.warn('ApiClient updateCategory (form) failed, trying fallback:', apiErr.message);
+      const { data, error } = await supabase
+        .from('form_categories')
+        .update({
+          ...updates,
+          updated_at: new Date().toISOString()
+        })
+        .eq('category_id', categoryId)
+        .select()
+        .single();
 
-    if (error) throw error;
-
-    // Refresh local cache
-    await this.refresh();
-    return data;
+      if (error) throw error;
+      await this.refresh(true);
+      return data;
+    }
   }
 
   /**
@@ -333,45 +371,36 @@ export class DynamicCategoryService {
    * System categories cannot be deleted
    */
   static async deleteCategory(categoryId) {
-    // Check if it's a system category
     const category = await this.getCategoryById(categoryId);
     if (category?.is_system) {
       throw new Error(`Cannot delete system category: ${categoryId}`);
     }
 
-    // TODO: Check if category has fields assigned when form system is integrated
-    // For now, allow deletion
-    
-    const { error } = await supabase
-      .from('form_categories')
-      .delete()
-      .eq('category_id', categoryId);
+    try {
+      await ApiClient.delete(`/categories/${categoryId}`);
+      await this.refresh(true);
+      return true;
+    } catch (apiErr) {
+      console.warn('ApiClient deleteCategory (form) failed, trying fallback:', apiErr.message);
+      const { error } = await supabase
+        .from('form_categories')
+        .delete()
+        .eq('category_id', categoryId);
 
-    if (error) throw error;
-
-    // Refresh local cache
-    await this.refresh();
-    return true;
+      if (error) throw error;
+      await this.refresh(true);
+      return true;
+    }
   }
 
   /**
    * Reorder categories (admin function)
    */
   static async reorderCategories(categoryOrders) {
-    const updates = categoryOrders.map(({ categoryId, order }) => ({
-      category_id: categoryId,
-      display_order: order,
-      updated_at: new Date().toISOString()
-    }));
-
-    const { error } = await supabase
-      .from('form_categories')
-      .upsert(updates, { onConflict: 'category_id' });
-
-    if (error) throw error;
-
-    // Refresh local cache
-    await this.refresh();
+    for (const { categoryId, order } of categoryOrders) {
+      await ApiClient.put(`/categories/${categoryId}`, { display_order: order }).catch(() => {});
+    }
+    await this.refresh(true);
     return true;
   }
 

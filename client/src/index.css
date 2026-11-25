@@ -1,11 +1,11 @@
 @import "tailwindcss";
 
 :root {
-  --bg: #0b0b0d;
-  --card: rgba(255, 255, 255, 0.08);
-  --card-border: rgba(255, 255, 255, 0.18);
-  --muted: rgba(255, 255, 255, 0.7);
-  --muted-2: rgba(255, 255, 255, 0.55);
+  --bg: #07090f;
+  --card: rgba(15, 19, 30, 0.72);
+  --card-border: rgba(255, 255, 255, 0.13);
+  --muted: rgba(255, 255, 255, 0.74);
+  --muted-2: rgba(255, 255, 255, 0.56);
   --brand: #ff7a18;
 }
 
@@ -75,15 +75,24 @@ body,
 }
 
 body {
-  background-image: linear-gradient(rgba(8, 8, 10, 0.6), rgba(8, 8, 10, 0.7)),
+  background-color: var(--bg);
+  background-image: linear-gradient(rgba(7, 9, 15, 0.78), rgba(7, 9, 15, 0.88)),
     url("/bg.png");
   background-size: cover;
   background-position: center;
   background-attachment: fixed;
   color: white;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-* {
+button,
+a,
+input,
+select,
+textarea,
+.btn,
+.card {
   transition: background-color 150ms ease, color 150ms ease,
     border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
 }
@@ -91,28 +100,34 @@ body {
 .card {
   border: 1px solid var(--card-border);
   background: var(--card);
-  border-radius: 16px;
+  border-radius: 18px;
   padding: 24px;
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
 }
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 12px;
 }
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 8px;
-  padding: 8px 16px;
-  font-size: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  background: rgba(255, 255, 255, 0.08);
+  gap: 6px;
+  white-space: nowrap;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.07);
+  cursor: pointer;
 }
 .btn:hover {
   background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.28);
 }
 .btn:disabled {
   opacity: 0.6;
@@ -120,20 +135,21 @@ body {
 }
 .btn-primary {
   color: white;
-  background: var(--brand);
-  border-color: #ffa24f;
+  background: linear-gradient(135deg, #ff7a18, #ea580c);
+  border-color: rgba(255, 162, 79, 0.6);
+  box-shadow: 0 4px 14px rgba(234, 88, 12, 0.28);
 }
 .btn-primary:hover {
-  background: #ff6a00;
+  background: linear-gradient(135deg, #ff6a00, #c2410c);
 }
 .input,
 .select,
 .textarea {
   width: 100%;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  padding: 9px 12px;
   font-size: 14px;
   color: white;
 }
@@ -401,10 +417,11 @@ label.cursor-pointer:not(.rounded-2xl):not(.rounded-xl) {
 }
 .table-wrap {
   overflow-x: auto;
-  border-radius: 16px;
+  border-radius: 18px;
   border: 1px solid var(--card-border);
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(16px);
   background: var(--card);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
 }
 .table {
   min-width: 100%;
@@ -454,23 +471,20 @@ label.cursor-pointer:not(.rounded-2xl):not(.rounded-xl) {
   cursor: not-allowed;
 }
 
-/* Global fix: ensure native select dropdowns are always readable */
-/* Many browsers render option lists using system UI colors and may inherit text color from the select. */
-/* Force a high-contrast light dropdown list with dark text to avoid white-on-white scenarios. */
+/* Global fix: ensure native select dropdowns stay readable in dark mode */
 select option {
-  background-color: #ffffff !important;
-  color: #111111 !important;
+  background-color: #0f172a !important;
+  color: #f8fafc !important;
 }
 select optgroup {
-  background-color: #ffffff !important;
-  color: #111111 !important;
+  background-color: #0f172a !important;
+  color: #f8fafc !important;
 }
-/* Hover/active state for options for better visibility */
 select option:hover,
 select option:focus,
 select option:checked {
-  background-color: #f2f2f2 !important;
-  color: #111111 !important;
+  background-color: #ea580c !important;
+  color: #ffffff !important;
 }
 
 /* Edge cases: some engines (older Safari/Firefox) need explicit -moz/-webkit appearance overrides on select for consistency */

@@ -189,21 +189,18 @@ export default function AssignmentPage() {
 
   if (currentView === 'evaluating') {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="text-center space-y-6">
-          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-orange-500 mx-auto"></div>
+      <div className="flex items-center justify-center min-h-[440px]">
+        <div className="bg-slate-950/75 backdrop-blur-2xl border border-white/15 rounded-2xl p-8 sm:p-10 max-w-lg w-full text-center space-y-6 shadow-2xl">
+          <div className="animate-spin rounded-full h-14 w-14 border-b-2 border-orange-500 mx-auto"></div>
           <div className="space-y-2">
-            <h2 className="text-xl font-semibold text-white">{t('assignment.evaluatingTitle')}</h2>
-            <p className="text-white/70">{t('assignment.evaluatingSubtitle')}</p>
-            <div className="text-sm text-white/60">
-              {t('assignment.checkingAccuracy')} • {t('assignment.evaluatingExplanation')} • {t('assignment.analyzingReasoning')}
-            </div>
+            <h2 className="text-xl sm:text-2xl font-bold text-white">{t('assignment.evaluatingTitle')}</h2>
+            <p className="text-sm text-white/70">{t('assignment.evaluatingSubtitle')}</p>
           </div>
-          <div className="space-y-2">
-            <div className="text-sm text-orange-400">{t('assignment.checkingAccuracy')}</div>
-            <div className="text-sm text-orange-400">{t('assignment.evaluatingExplanation')}</div>
-            <div className="text-sm text-orange-400">{t('assignment.analyzingReasoning')}</div>
-            <div className="text-sm text-white/60">{t('assignment.generatingFeedback')}</div>
+          <div className="grid gap-2 text-left bg-slate-900/70 border border-white/10 rounded-xl p-4 text-xs sm:text-sm">
+            <div className="text-orange-300 flex items-center gap-2">• {t('assignment.checkingAccuracy')}</div>
+            <div className="text-orange-300 flex items-center gap-2">• {t('assignment.evaluatingExplanation')}</div>
+            <div className="text-orange-300 flex items-center gap-2">• {t('assignment.analyzingReasoning')}</div>
+            <div className="text-white/60 flex items-center gap-2">• {t('assignment.generatingFeedback')}</div>
           </div>
         </div>
       </div>

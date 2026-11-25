@@ -128,7 +128,22 @@ export default function StudentAnalytics() {
           <Users className="h-6 w-6 text-orange-400" />
           <h2 className="text-xl font-semibold text-white">Student Details & Attempts ({filteredData.length})</h2>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => {
+              try {
+                ExportService.exportAllToExcel([], filteredData, 'abhiruchi_analytics');
+                toast.success(`Exported ${filteredData.length} assessment records to Excel (.xlsx)`);
+              } catch (e) {
+                toast.error(e.message);
+              }
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 border border-emerald-500/30 text-xs font-semibold transition-all"
+            title="Download multi-sheet Excel workbook with attempts & per-question responses"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Export Excel
+          </button>
           <button
             onClick={() => {
               try {
@@ -147,13 +162,29 @@ export default function StudentAnalytics() {
           <button
             onClick={() => {
               try {
+                ExportService.exportAllToJSON({ total_attempts: filteredData.length, attempts: filteredData }, 'abhiruchi_attempts_complete');
+                toast.success(`Exported ${filteredData.length} assessment records to JSON`);
+              } catch (e) {
+                toast.error(e.message);
+              }
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 border border-purple-500/30 text-xs font-semibold transition-all"
+            title="Download full JSON dump including question-level answers and AI feedback"
+          >
+            <FileText className="w-3.5 h-3.5" />
+            Export JSON
+          </button>
+          <button
+            onClick={() => {
+              try {
                 ExportService.exportCohortSummaryPDF(filteredData);
+                toast.success(`Downloaded Cohort PDF report`);
               } catch (e) {
                 toast.error(e.message);
               }
             }}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 text-blue-300 hover:bg-blue-500/30 border border-blue-500/30 text-xs font-semibold transition-all"
-            title="Generate printable cohort PDF summary report"
+            title="Download cohort PDF summary report"
           >
             <FileText className="w-3.5 h-3.5" />
             Cohort PDF Report

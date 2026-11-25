@@ -8,6 +8,7 @@ import { FormConfigService } from "../lib/formConfigService";
 import { ArrowLeft } from 'lucide-react';
 import { useI18n } from "../lib/i18n";
 import toast from 'react-hot-toast';
+import { fieldBasedQuestionService } from "../lib/fieldBasedQuestionService";
 
 const APPROVED_INSTITUTES = [
   { code: 'MSSU', name: 'MSSU - Maharashtra State Skills University' },
@@ -169,6 +170,12 @@ function Intake() {
 
       setFormData(mergedData);
 
+      // Silently pre-generate bespoke MITRA assessment questions while redirecting
+      fieldBasedQuestionService.prewarmForStudent({
+        ...mergedData,
+        user_id: user.id,
+      }).catch(() => {});
+
       if (isEditing) {
         setSuccess("Profile and institute affiliation updated successfully!");
         toast.success("Profile and institute updated successfully!");
@@ -198,10 +205,10 @@ function Intake() {
 
   if (loadingProfile) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-white text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-500 mx-auto mb-4"></div>
-          <p>{t('intake.loadingForm')}</p>
+      <div className="flex items-center justify-center min-h-[420px]">
+        <div className="bg-slate-950/70 backdrop-blur-xl border border-white/15 rounded-2xl p-8 text-white text-center shadow-xl">
+          <div className="animate-spin rounded-full h-11 w-11 border-b-2 border-orange-500 mx-auto mb-4"></div>
+          <p className="text-sm text-white/80 font-medium">{t('intake.loadingForm')}</p>
         </div>
       </div>
     );
@@ -209,10 +216,10 @@ function Intake() {
 
   if (!currentFormConfig) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-white text-center">
-          <p>{t('intake.formConfigNotAvailable')}</p>
-          <Link to="/dashboard" className="text-orange-400 hover:text-orange-300 mt-2 inline-block">
+      <div className="flex items-center justify-center min-h-[420px]">
+        <div className="bg-slate-950/70 backdrop-blur-xl border border-white/15 rounded-2xl p-8 text-white text-center shadow-xl max-w-md w-full">
+          <p className="text-white/80 mb-4">{t('intake.formConfigNotAvailable')}</p>
+          <Link to="/dashboard" className="btn bg-orange-500 hover:bg-orange-600 text-white text-sm">
             {t('intake.returnToDashboard')}
           </Link>
         </div>
@@ -221,21 +228,21 @@ function Intake() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8 animate-fadeIn">
+    <div className="max-w-4xl mx-auto space-y-6 animate-fadeIn">
       {/* Header section */}
-      <div className="mb-8">
+      <div>
         <Link 
           to="/dashboard" 
-          className="inline-flex items-center text-sm text-white/70 hover:text-white mb-4 transition-colors"
+          className="inline-flex items-center text-xs sm:text-sm text-white/65 hover:text-white mb-4 transition-colors"
         >
-          <ArrowLeft className="w-4 h-4 mr-2" />
+          <ArrowLeft className="w-4 h-4 mr-1.5" />
           {t('intake.backToDashboard') || 'Back to Dashboard'}
         </Link>
         
-        <h1 className="text-3xl sm:text-4xl font-extrabold bg-gradient-to-r from-white via-orange-100 to-amber-200 bg-clip-text text-transparent mb-2">
+        <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-white mb-2">
           {isEditing ? t('intake.editYourProfile') : t('intake.welcomeToGurukul')}
         </h1>
-        <p className="text-white/70 text-sm sm:text-base">
+        <p className="text-white/65 text-sm sm:text-base">
           {isEditing 
             ? t('intake.updateInfo') 
             : t('intake.tellUsAboutYou')
@@ -245,7 +252,7 @@ function Intake() {
 
       {/* Error and Success Messages */}
       {error && (
-        <div className="mb-6 p-4 bg-red-500/15 border border-red-500/30 rounded-2xl text-red-200 text-sm animate-in fade-in">
+        <div className="p-4 bg-red-500/15 border border-red-500/30 rounded-2xl text-red-200 text-sm animate-in fade-in">
           <div className="flex items-center gap-2">
             <span>⚠️</span>
             <span>{error}</span>
@@ -254,7 +261,7 @@ function Intake() {
       )}
       
       {success && (
-        <div className="mb-6 p-4 bg-green-500/15 border border-green-500/30 rounded-2xl text-green-200 text-sm animate-in fade-in">
+        <div className="p-4 bg-emerald-500/15 border border-emerald-500/30 rounded-2xl text-emerald-200 text-sm animate-in fade-in">
           <div className="flex items-center gap-2">
             <span>✅</span>
             <span>{success}</span>
@@ -263,18 +270,18 @@ function Intake() {
       )}
 
       {/* Canonical Institute Selector Card */}
-      <div className="mb-8 rounded-3xl border border-white/15 bg-gradient-to-br from-slate-900/90 via-slate-900/70 to-slate-950/90 backdrop-blur-2xl p-6 sm:p-7 shadow-2xl relative overflow-hidden group">
-        <div className="absolute top-0 right-0 w-64 h-64 bg-orange-500/10 rounded-full blur-3xl pointer-events-none group-hover:bg-orange-500/15 transition-all duration-500"></div>
+      <div className="rounded-2xl border border-white/15 bg-slate-950/75 backdrop-blur-xl p-6 shadow-2xl relative overflow-hidden group">
+        <div className="absolute top-0 right-0 w-56 h-56 bg-orange-500/10 rounded-full blur-3xl pointer-events-none"></div>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
-          <div className="flex items-center gap-2.5">
-            <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-orange-500/20 text-orange-400 border border-orange-500/30 text-base shadow-sm">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-orange-500/15 text-orange-400 border border-orange-500/30 text-base">
               🏛️
             </span>
             <div>
               <label htmlFor="institute_select" className="text-sm font-semibold tracking-wide text-white">
                 Select Your Institute
               </label>
-              <span className="ml-2 text-[11px] font-medium uppercase tracking-wider text-orange-400/90 bg-orange-500/10 px-2 py-0.5 rounded-full border border-orange-500/20">
+              <span className="ml-2 text-[11px] font-medium uppercase tracking-wider text-orange-300 bg-orange-500/10 px-2 py-0.5 rounded-full border border-orange-500/20">
                 Mandatory for BHIV Enrolment
               </span>
             </div>
@@ -307,23 +314,23 @@ function Intake() {
             disabled={isInstituteLocked}
             value={formData.institute_code || ""}
             onChange={(e) => handleFieldChange("institute_code", e.target.value, { ...formData, institute_code: e.target.value })}
-            className={`w-full rounded-2xl border px-4 py-3.5 pr-10 text-sm font-medium transition-all duration-200 focus:outline-none focus:ring-2 appearance-none ${
+            className={`w-full rounded-xl border px-4 py-3 pr-10 text-sm font-medium transition-all duration-200 focus:outline-none focus:ring-2 appearance-none ${
               isInstituteLocked
-                ? "bg-slate-950/60 border-white/10 text-white/70 cursor-not-allowed opacity-75"
+                ? "bg-slate-900/60 border-white/10 text-white/70 cursor-not-allowed opacity-75"
                 : !formData.institute_code
-                ? "bg-slate-950/90 border-amber-500/40 text-amber-200/90 focus:border-orange-400 focus:ring-orange-400/20 shadow-[0_0_15px_rgba(245,158,11,0.08)] cursor-pointer"
-                : "bg-slate-950/90 border-white/20 text-white focus:border-emerald-400 focus:ring-emerald-400/20 cursor-pointer"
+                ? "bg-slate-900/85 border-amber-500/40 text-amber-200/90 focus:border-orange-400 focus:ring-orange-400/20 cursor-pointer"
+                : "bg-slate-900/85 border-white/20 text-white focus:border-emerald-400 focus:ring-emerald-400/20 cursor-pointer"
             }`}
-            style={{ backgroundColor: isInstituteLocked ? "#070b14" : "#0b0f19", color: "#f8fafc" }}
+            style={{ backgroundColor: isInstituteLocked ? "#090d16" : "#0f172a", color: "#f8fafc" }}
           >
-            <option value="" disabled style={{ backgroundColor: "#0b0f19", color: "#94a3b8" }}>
+            <option value="" disabled style={{ backgroundColor: "#0f172a", color: "#94a3b8" }}>
               -- Choose your Institute (Required) --
             </option>
             {APPROVED_INSTITUTES.map((inst) => (
               <option
                 key={inst.code}
                 value={inst.code}
-                style={{ backgroundColor: "#0b0f19", color: "#f8fafc" }}
+                style={{ backgroundColor: "#0f172a", color: "#f8fafc" }}
               >
                 {inst.name}
               </option>
@@ -352,19 +359,19 @@ function Intake() {
       </div>
 
       {mintedCandidateId && (
-        <div className="mb-6 p-4 bg-emerald-500/20 border border-emerald-400/40 rounded-2xl text-emerald-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg">
+        <div className="p-4 bg-emerald-500/15 border border-emerald-400/35 rounded-2xl text-emerald-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg backdrop-blur-xl">
           <div>
             <span className="text-sm font-medium">🎓 Canonical Candidate ID Issued: <strong className="font-mono text-white text-base ml-1">{mintedCandidateId}</strong></span>
             <div className="text-xs text-emerald-300/80 mt-1">Enrolment registered with Sampada & Hackaverse ecosystem.</div>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-xs bg-emerald-500/30 text-emerald-200 px-2.5 py-1 rounded-full font-semibold border border-emerald-400/30">VERIFIED</span>
+            <span className="text-xs bg-emerald-500/25 text-emerald-200 px-2.5 py-1 rounded-full font-semibold border border-emerald-400/30">VERIFIED</span>
             {(formData.email || user?.email) && (
               <a
                 href={`${import.meta.env.VITE_PRAVESH_URL || "http://localhost:5174"}/login?email=${encodeURIComponent(formData.email || user?.email || "")}&auto=true`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:opacity-90 text-white text-xs font-semibold shadow-md transition-all flex items-center gap-1.5 border border-white/20 hover:scale-105"
+                className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-cyan-500 hover:brightness-110 text-white text-xs font-semibold shadow-md transition-all flex items-center gap-1.5 border border-white/20"
                 title="Launch Pravesh with your enrolled email"
               >
                 <span>⚡</span>
@@ -376,7 +383,7 @@ function Intake() {
       )}
 
       {/* Dynamic Form Container */}
-      <div className="bg-slate-900/80 backdrop-blur-2xl border border-white/20 rounded-3xl p-6 sm:p-10 shadow-2xl relative overflow-hidden">
+      <div className="bg-slate-950/70 backdrop-blur-2xl border border-white/15 rounded-2xl p-6 sm:p-8 shadow-2xl relative overflow-hidden">
         <div className="absolute top-0 right-0 w-48 h-48 bg-orange-500/10 rounded-full blur-3xl pointer-events-none"></div>
         <div className="absolute bottom-0 left-0 w-48 h-48 bg-purple-500/10 rounded-full blur-3xl pointer-events-none"></div>
 
